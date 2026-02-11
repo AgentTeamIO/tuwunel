@@ -5335,6 +5335,7 @@ dependencies = [
  "tuwunel_database",
  "tuwunel_macros",
  "tuwunel_service",
+ "url",
 ]
 
 [[package]]
