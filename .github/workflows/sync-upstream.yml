@@ -1,0 +1,90 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 0 * * 1" # Every Monday at 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agentteam branch
+        uses: actions/checkout@v4
+        with:
+          ref: agentteam
+          fetch-depth: 0
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/matrix-construct/tuwunel.git
+          git fetch upstream main
+
+      - name: Check for new commits
+        id: check
+        run: |
+          COMMIT_COUNT=$(git rev-list HEAD..upstream/main --count)
+          echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "No new upstream commits. Skipping."
+          else
+            echo "$COMMIT_COUNT new commit(s) from upstream."
+          fi
+
+      - name: Create sync branch and merge
+        if: steps.check.outputs.commit_count != '0'
+        id: merge
+        run: |
+          BRANCH_NAME="sync/upstream-$(date +%Y%m%d)"
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH_NAME"
+
+          if git merge upstream/main --no-edit; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            git add -A
+            git commit --no-edit -m "sync: merge upstream main into agentteam (with conflicts)"
+          fi
+
+          git push origin "$BRANCH_NAME"
+
+      - name: Create Pull Request
+        if: steps.check.outputs.commit_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_COUNT: ${{ steps.check.outputs.commit_count }}
+          BRANCH_NAME: ${{ steps.merge.outputs.branch_name }}
+          CONFLICT: ${{ steps.merge.outputs.conflict }}
+        run: |
+          BODY="## Upstream Sync
+
+          This PR merges **${COMMIT_COUNT} new commit(s)** from upstream [\`main\`](https://github.com/matrix-construct/tuwunel/tree/main) into \`agentteam\`.
+
+          Upstream repo: https://github.com/matrix-construct/tuwunel"
+
+          if [ "$CONFLICT" = "true" ]; then
+            BODY="${BODY}
+
+          > **Warning**: Merge conflicts were detected. Please resolve them manually before merging."
+            gh pr create \
+              --title "sync: merge upstream main into agentteam" \
+              --body "$BODY" \
+              --base agentteam \
+              --head "$BRANCH_NAME" \
+              --draft
+          else
+            gh pr create \
+              --title "sync: merge upstream main into agentteam" \
+              --body "$BODY" \
+              --base agentteam \
+              --head "$BRANCH_NAME"
+          fi
