@@ -1435,6 +1435,15 @@ pub struct Config {
 	/// display: sensitive
 	pub admin_token: Option<String>,
 
+	/// NATS server URL for the vhost watcher (NatsWatcher).
+	/// When set, Tuwunel will connect to NATS and watch the `kv_vhosts`
+	/// bucket for dynamic vhost provisioning.
+	/// If unset, NatsWatcher is disabled and vhosts are managed only
+	/// via the admin API.
+	///
+	/// example: "nats://localhost:4222"
+	pub nats_url: Option<String>,
+
 	/// default: "/_matrix/push/v1/notify"
 	#[serde(default = "default_notification_push_path")]
 	pub notification_push_path: String,

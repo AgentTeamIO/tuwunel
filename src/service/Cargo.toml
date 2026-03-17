@@ -85,6 +85,7 @@ zstd_compression = [
 ]
 
 [dependencies]
+async-nats.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 bytes.workspace = true
