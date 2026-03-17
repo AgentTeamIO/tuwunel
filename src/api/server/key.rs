@@ -21,8 +21,10 @@ use tuwunel_core::{Err, Result, utils::timepoint_from_now};
 /// Gets the public signing keys of this server.
 ///
 /// With vhost support, the Host header is used to determine which vhost's
-/// keys to return. Falls back to the bootstrap server_name if the Host
-/// header is missing or does not match any known vhost.
+/// keys to return. If the Host header is missing or does not match any known
+/// vhost (including bootstrap), returns 404. This is critical for federation
+/// correctness — returning bootstrap keys for an unknown host would let
+/// remote servers accept forged events.
 ///
 /// - Matrix does not support invalidating public keys, so the key returned by
 ///   this will be valid forever.
@@ -32,8 +34,13 @@ pub(crate) async fn get_server_keys_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-	// Extract vhost from Host header, fallback to bootstrap server_name
-	let server_name = resolve_server_name(&services, &headers);
+	// Extract vhost from Host header — no fallback to bootstrap.
+	// Returning bootstrap keys for an unrecognised host would let remote
+	// servers accept events signed by the bootstrap key as if they came from
+	// the vhost, breaking federation integrity.
+	let Some(server_name) = resolve_server_name(&services, &headers) else {
+		return Err!(Request(NotFound("Unknown server name")));
+	};
 
 	let mut all_keys = services
 		.server_keys
@@ -98,25 +105,25 @@ fn build_response(
 }
 
 /// Resolve the server name from the Host header.
-/// If the Host header is present and matches a known vhost, use that.
-/// Otherwise, fall back to the bootstrap server_name.
+/// Returns `Some(name)` if the Host matches the bootstrap server or a known
+/// vhost, `None` otherwise. No fallback — callers decide what to do when the
+/// host is unrecognised.
 fn resolve_server_name(
 	services: &tuwunel_service::Services,
 	headers: &HeaderMap,
-) -> OwnedServerName {
-	if let Some(host) = headers.get(http::header::HOST) {
-		if let Ok(host_str) = host.to_str() {
-			// Strip port if present (e.g. "example.com:8448" -> "example.com")
-			let name = host_str.split(':').next().unwrap_or(host_str);
-			if let Ok(sn) = <&ServerName>::try_from(name) {
-				if services.globals.server_is_ours(sn) {
-					return sn.to_owned();
-				}
-			}
-		}
-	}
+) -> Option<OwnedServerName> {
+	let host = headers.get(http::header::HOST)?;
+	let host_str = host.to_str().ok()?;
 
-	services.globals.server_name().to_owned()
+	// Strip port if present (e.g. "example.com:8448" -> "example.com")
+	let name = host_str.split(':').next().unwrap_or(host_str);
+	let sn = <&ServerName>::try_from(name).ok()?;
+
+	if services.globals.server_is_ours(sn) {
+		Some(sn.to_owned())
+	} else {
+		None
+	}
 }
 
 fn valid_until_ts() -> MilliSecondsSinceUnixEpoch {

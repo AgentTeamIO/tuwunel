@@ -1,7 +1,11 @@
 use axum::{Json, extract::State, response::IntoResponse};
-use ruma::api::client::discovery::{
-	discover_homeserver::{self, HomeserverInfo, RtcFocusInfo},
-	discover_support::{self, Contact},
+use http::HeaderMap;
+use ruma::{
+	ServerName,
+	api::client::discovery::{
+		discover_homeserver::{self, HomeserverInfo, RtcFocusInfo},
+		discover_support::{self, Contact},
+	},
 };
 use serde_json::Value as JsonValue;
 use tuwunel_core::{Err, Result, err, error::inspect_log};
@@ -11,16 +15,20 @@ use crate::Ruma;
 /// # `GET /.well-known/matrix/client`
 ///
 /// Returns the .well-known URL if it is configured, otherwise returns 404.
+/// With vhost support, dynamically derives `base_url` from the Host header
+/// when the host matches a known vhost (e.g. `https://qi.agtm.app`).
+/// Falls back to the static config `well_known.client` for the bootstrap
+/// server.
 /// Also includes RTC transport configuration for Element Call (MSC4143).
 pub(crate) async fn well_known_client(
 	State(services): State<crate::State>,
+	headers: HeaderMap,
 	_body: Ruma<discover_homeserver::Request>,
 ) -> Result<discover_homeserver::Response> {
 	let homeserver = HomeserverInfo {
-		base_url: match services.server.config.well_known.client.as_ref() {
-			| Some(url) => url.to_string(),
-			| None => return Err!(Request(NotFound("Not found."))),
-		},
+		base_url: vhost_base_url(&services, &headers)
+			.or_else(|| services.server.config.well_known.client.as_ref().map(|u| u.to_string()))
+			.ok_or_else(|| err!(Request(NotFound("Not found."))))?,
 	};
 
 	// Add RTC transport configuration if available (MSC4143 / Element Call)
@@ -143,4 +151,26 @@ pub(crate) async fn syncv3_client_server_json(
 		"server": server_url,
 		"version": tuwunel_core::version(),
 	})))
+}
+
+/// Derive `base_url` from the Host header when it matches a known vhost.
+/// Returns `Some("https://<host>")` for recognised vhosts, `None` otherwise.
+fn vhost_base_url(
+	services: &tuwunel_service::Services,
+	headers: &HeaderMap,
+) -> Option<String> {
+	let host = headers.get(http::header::HOST)?;
+	let host_str = host.to_str().ok()?;
+
+	// Strip port if present (e.g. "example.com:8448" -> "example.com")
+	let name = host_str.split(':').next().unwrap_or(host_str);
+	let sn = <&ServerName>::try_from(name).ok()?;
+
+	// Only generate dynamic base_url for vhosts, not the bootstrap server
+	// (the bootstrap server uses the static config value).
+	if sn != services.globals.server_name() && services.globals.server_is_ours(sn) {
+		Some(format!("https://{name}"))
+	} else {
+		None
+	}
 }
