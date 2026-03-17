@@ -19,6 +19,7 @@ pub mod globals;
 pub mod key_backups;
 pub mod media;
 pub mod membership;
+pub mod nats_watcher;
 pub mod oauth;
 pub mod presence;
 pub mod pusher;

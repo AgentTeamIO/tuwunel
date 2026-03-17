@@ -12,7 +12,7 @@ use crate::{
 	account_data, admin, appservice, client, config, deactivate, emergency, federation, globals,
 	key_backups,
 	manager::Manager,
-	media, membership, oauth, presence, pusher, registration_tokens, resolver,
+	media, membership, nats_watcher, oauth, presence, pusher, registration_tokens, resolver,
 	rooms::{self, retention},
 	sending, server_keys,
 	service::{Args, Service},
@@ -65,6 +65,7 @@ pub struct Services {
 	pub registration_tokens: Arc<registration_tokens::Service>,
 
 	manager: Mutex<Option<Arc<Manager>>>,
+	nats_watcher: Mutex<Option<tokio::task::JoinHandle<()>>>,
 	pub server: Arc<Server>,
 	pub db: Arc<Database>,
 }
@@ -125,6 +126,7 @@ pub async fn build(server: Arc<Server>) -> Result<Arc<Self>> {
 		registration_tokens: registration_tokens::Service::build(&args)?,
 
 		manager: Mutex::new(None),
+		nats_watcher: Mutex::new(None),
 		server,
 		db,
 	});
@@ -216,6 +218,15 @@ pub async fn start(self: &Arc<Self>) -> Result<Arc<Self>> {
 		.start()
 		.await?;
 
+	// Spawn NatsWatcher if nats_url is configured
+	if self.server.config.nats_url.is_some() {
+		info!("NatsWatcher enabled — spawning background task");
+		let handle = nats_watcher::spawn(Arc::clone(self));
+		*self.nats_watcher.lock().await = Some(handle);
+	} else {
+		debug_info!("NatsWatcher disabled — TUWUNEL_NATS_URL not set");
+	}
+
 	debug_info!("Services startup complete.");
 
 	Ok(Arc::clone(self))
@@ -224,6 +235,14 @@ pub async fn start(self: &Arc<Self>) -> Result<Arc<Self>> {
 #[implement(Services)]
 pub async fn stop(&self) {
 	info!("Shutting down services...");
+
+	// Stop NatsWatcher first
+	if let Some(handle) = self.nats_watcher.lock().await.take() {
+		debug!("Stopping NatsWatcher...");
+		handle.abort();
+		let _ = handle.await;
+		debug!("NatsWatcher stopped");
+	}
 
 	self.interrupt().await;
 	if let Some(manager) = self.manager.lock().await.as_ref() {
