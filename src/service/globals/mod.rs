@@ -1,4 +1,5 @@
 mod data;
+pub mod vhost;
 
 use std::{ops::Range, sync::Arc};
 
@@ -7,10 +8,15 @@ use ruma::{OwnedUserId, RoomAliasId, ServerName, UserId};
 use tuwunel_core::{Result, Server, err, error};
 
 use crate::service;
+pub use vhost::VhostRegistry;
 
 pub struct Service {
 	pub db: Data,
 	server: Arc<Server>,
+
+	/// Virtual host registry for multi-tenant support.
+	/// Contains bootstrap server_name and any dynamically added vhosts.
+	pub vhosts: VhostRegistry,
 
 	pub server_user: OwnedUserId,
 	pub turn_secret: Option<String>,
@@ -35,6 +41,7 @@ impl crate::Service for Service {
 
 		Ok(Arc::new(Self {
 			db,
+			vhosts: VhostRegistry::new(args.server.name.clone()),
 			server: args.server.clone(),
 			server_user: UserId::parse_with_server_name(
 				String::from("conduit"),
@@ -96,10 +103,13 @@ impl Service {
 		self.server_is_ours(alias.server_name())
 	}
 
+	/// Check if a server name belongs to this instance (any vhost).
+	/// With multi-vhost support, this checks the VhostRegistry which
+	/// includes the bootstrap server_name and any dynamically added vhosts.
 	#[inline]
 	#[must_use]
 	pub fn server_is_ours(&self, server_name: &ServerName) -> bool {
-		server_name == self.server_name()
+		self.vhosts.is_ours(server_name)
 	}
 
 	#[inline]

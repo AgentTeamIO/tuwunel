@@ -63,3 +63,33 @@ fn remove(db: &Arc<Database>) {
 	let global = &db["global"];
 	global.remove(b"keypair");
 }
+
+/// Generate a new in-memory keypair for a virtual host.
+/// The keypair is NOT persisted to the database (that is a later milestone).
+/// Returns a `VhostKeypair` containing the version, keypair, and verify keys.
+///
+/// Used by admin API (Task 3.3) to register new vhosts.
+#[allow(dead_code)]
+pub(super) fn generate_vhost_keypair() -> Result<super::VhostKeypair> {
+	let raw_keypair = Ed25519KeyPair::generate()
+		.map_err(|e| err!("Failed to generate vhost ed25519 keypair: {e:?}"))?;
+
+	let version = utils::rand::string(8);
+	let der = raw_keypair.to_vec();
+
+	let keypair = Ed25519KeyPair::from_der(&der, version.clone())
+		.map_err(|e| err!("Failed to load vhost ed25519 keypair from der: {e:?}"))?;
+
+	let verify_key = VerifyKey {
+		key: Base64::new(keypair.public_key().to_vec()),
+	};
+
+	let id = format!("ed25519:{version}");
+	let verify_keys: VerifyKeys = [(id.try_into()?, verify_key)].into();
+
+	Ok(super::VhostKeypair {
+		version,
+		keypair: Box::new(keypair),
+		verify_keys,
+	})
+}

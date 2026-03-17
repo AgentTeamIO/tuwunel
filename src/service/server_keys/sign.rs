@@ -1,4 +1,4 @@
-use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, RoomVersionId};
+use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, RoomVersionId, ServerName};
 use tuwunel_core::{
 	Result, err, implement,
 	matrix::{event::gen_event_id, room_version},
@@ -56,6 +56,8 @@ fn gen_id_hash_and_sign_event_v3(
 	Ok(event_id)
 }
 
+/// Hash and sign an event using the bootstrap keypair.
+/// This is the backwards-compatible path used by all existing code.
 #[implement(super::Service)]
 pub fn hash_and_sign_event(
 	&self,
@@ -84,6 +86,67 @@ pub fn hash_and_sign_event(
 	})
 }
 
+/// Hash and sign an event for a specific vhost.
+/// Falls back to bootstrap keypair if the server name matches bootstrap.
+/// Returns an error if the server name is not known (neither bootstrap nor registered vhost).
+#[implement(super::Service)]
+pub fn hash_and_sign_event_for_vhost(
+	&self,
+	object: &mut CanonicalJsonObject,
+	room_version_id: &RoomVersionId,
+	server_name: &ServerName,
+) -> Result {
+	use ruma::signatures::hash_and_sign_event;
+
+	let room_version_rules = room_version::rules(room_version_id)?;
+
+	// Bootstrap server uses the primary keypair
+	if server_name == self.services.globals.server_name() {
+		return hash_and_sign_event(
+			server_name.as_str(),
+			self.keypair(),
+			object,
+			&room_version_rules.redaction,
+		)
+		.map_err(|e| {
+			use ruma::signatures::Error::PduSize;
+			match e {
+				| PduSize => {
+					err!(Request(TooLarge("PDU exceeds 65535 bytes")))
+				},
+				| _ => err!(Request(Unknown(warn!("Signing event for vhost failed: {e}")))),
+			}
+		});
+	}
+
+	// Look up vhost keypair
+	let map = self
+		.vhost_keypairs
+		.read()
+		.expect("vhost_keypairs lock poisoned");
+
+	let vhost_kp = map
+		.get(server_name)
+		.ok_or_else(|| err!(Request(Unknown("Unknown vhost: {server_name}"))))?;
+
+	hash_and_sign_event(
+		server_name.as_str(),
+		&*vhost_kp.keypair,
+		object,
+		&room_version_rules.redaction,
+	)
+	.map_err(|e| {
+		use ruma::signatures::Error::PduSize;
+		match e {
+			| PduSize => {
+				err!(Request(TooLarge("PDU exceeds 65535 bytes")))
+			},
+			| _ => err!(Request(Unknown(warn!("Signing event for vhost failed: {e}")))),
+		}
+	})
+}
+
+/// Sign a JSON object using the bootstrap keypair (backwards compat).
 #[implement(super::Service)]
 pub fn sign_json(&self, object: &mut CanonicalJsonObject) -> Result {
 	use ruma::signatures::sign_json;
@@ -91,4 +154,32 @@ pub fn sign_json(&self, object: &mut CanonicalJsonObject) -> Result {
 	let server_name = self.services.globals.server_name().as_str();
 
 	sign_json(server_name, self.keypair(), object).map_err(Into::into)
+}
+
+/// Sign a JSON object for a specific vhost.
+/// Falls back to bootstrap keypair if the server name matches bootstrap.
+#[implement(super::Service)]
+pub fn sign_json_for_vhost(
+	&self,
+	object: &mut CanonicalJsonObject,
+	server_name: &ServerName,
+) -> Result {
+	use ruma::signatures::sign_json;
+
+	// Bootstrap server uses the primary keypair
+	if server_name == self.services.globals.server_name() {
+		return sign_json(server_name.as_str(), self.keypair(), object).map_err(Into::into);
+	}
+
+	// Look up vhost keypair
+	let map = self
+		.vhost_keypairs
+		.read()
+		.expect("vhost_keypairs lock poisoned");
+
+	let vhost_kp = map
+		.get(server_name)
+		.ok_or_else(|| err!(Request(Unknown("Unknown vhost: {server_name}"))))?;
+
+	sign_json(server_name.as_str(), &*vhost_kp.keypair, object).map_err(Into::into)
 }

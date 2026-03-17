@@ -9,23 +9,35 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use ruma::{
-	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, ServerName,
-	ServerSigningKeyId,
+	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
+	ServerName, ServerSigningKeyId,
 	api::federation::discovery::{ServerSigningKeys, VerifyKey},
 	room_version_rules::RoomVersionRules,
 	serde::Raw,
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
 };
 use serde_json::value::RawValue as RawJsonValue;
+use std::sync::RwLock;
 use tuwunel_core::{
 	Result, implement,
 	utils::{IterStream, timepoint_from_now},
 };
 use tuwunel_database::{Deserialized, Json, Map};
 
+/// Per-vhost keypair data: version string and the Ed25519 keypair.
+pub struct VhostKeypair {
+	pub version: String,
+	pub keypair: Box<Ed25519KeyPair>,
+	pub verify_keys: VerifyKeys,
+}
+
 pub struct Service {
+	/// Bootstrap keypair (from database, backwards compat)
 	keypair: Box<Ed25519KeyPair>,
 	verify_keys: VerifyKeys,
+	/// Additional vhost keypairs keyed by server name.
+	/// The bootstrap server_name is NOT stored here — it uses the fields above.
+	vhost_keypairs: RwLock<BTreeMap<OwnedServerName, VhostKeypair>>,
 	minimum_valid: Duration,
 	services: Arc<crate::services::OnceServices>,
 	db: Data,
@@ -49,6 +61,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			keypair,
 			verify_keys,
+			vhost_keypairs: RwLock::new(BTreeMap::new()),
 			minimum_valid,
 			services: args.services.clone(),
 			db: Data {
@@ -80,6 +93,53 @@ pub fn active_verify_key(&self) -> (&ServerSigningKeyId, &VerifyKey) {
 		.next()
 		.map(|(id, key)| (id.as_ref(), key))
 		.expect("missing active verify_key")
+}
+
+/// Register a keypair for a virtual host. The keypair is generated in-memory
+/// (not persisted to the database — persistence is a later milestone).
+/// Returns false if the vhost already has a keypair registered.
+#[implement(Service)]
+pub fn add_vhost_keypair(&self, server_name: OwnedServerName, vhost_kp: VhostKeypair) -> bool {
+	use std::collections::btree_map::Entry;
+	let mut map = self
+		.vhost_keypairs
+		.write()
+		.expect("vhost_keypairs lock poisoned");
+	match map.entry(server_name) {
+		| Entry::Occupied(_) => false,
+		| Entry::Vacant(e) => {
+			e.insert(vhost_kp);
+			true
+		},
+	}
+}
+
+/// Remove a keypair for a virtual host.
+#[implement(Service)]
+pub fn remove_vhost_keypair(&self, server_name: &ServerName) -> bool {
+	let mut map = self
+		.vhost_keypairs
+		.write()
+		.expect("vhost_keypairs lock poisoned");
+	map.remove(server_name).is_some()
+}
+
+/// Get the keypair for a given server name. Returns the bootstrap keypair
+/// if the server name matches the bootstrap, otherwise looks up vhost keypairs.
+///
+/// Returns None if the server name is not known. The caller receives a clone
+/// of the Arc-wrapped Ed25519KeyPair to avoid holding the RwLock across await points.
+///
+/// Note: For the bootstrap keypair, we return a reference to self.keypair via a
+/// different code path in sign.rs. This method is primarily for vhost lookups.
+#[implement(Service)]
+#[must_use]
+pub fn is_vhost(&self, server_name: &ServerName) -> bool {
+	let map = self
+		.vhost_keypairs
+		.read()
+		.expect("vhost_keypairs lock poisoned");
+	map.contains_key(server_name)
 }
 
 #[implement(Service)]
@@ -165,10 +225,26 @@ pub async fn verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
 		.unwrap_or(BTreeMap::new());
 
 	if self.services.globals.server_is_ours(origin) {
-		keys.extend(self.verify_keys.clone());
+		// Check if this is the bootstrap server or a vhost
+		if origin == self.services.globals.server_name() {
+			keys.extend(self.verify_keys.clone());
+		} else if let Some(vhost_keys) = self.vhost_verify_keys(origin) {
+			keys.extend(vhost_keys);
+		}
 	}
 
 	keys
+}
+
+/// Get verify keys for a vhost, if it exists.
+#[implement(Service)]
+#[must_use]
+fn vhost_verify_keys(&self, origin: &ServerName) -> Option<VerifyKeys> {
+	let map = self
+		.vhost_keypairs
+		.read()
+		.expect("vhost_keypairs lock poisoned");
+	map.get(origin).map(|vkp| vkp.verify_keys.clone())
 }
 
 #[implement(Service)]

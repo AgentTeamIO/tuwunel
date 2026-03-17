@@ -1,0 +1,9 @@
+---
+source: src/main/tests/smoke.rs
+assertion_line: 26
+description: Smoke Test
+expression: result
+---
+Err(
+    I/O error: Failed to create RocksDB directory: `Os { code: 13, kind: PermissionDenied, message: "Permission denied" }`.,
+)
