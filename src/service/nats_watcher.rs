@@ -117,7 +117,7 @@ async fn run_once(nats_url: &str, services: &Arc<Services>) -> Result<(), Box<dy
 		// Check if server is shutting down
 		if !services.server.running() {
 			debug!("NatsWatcher stopping — server is shutting down");
-			break;
+			return Ok(());
 		}
 
 		match entry {
