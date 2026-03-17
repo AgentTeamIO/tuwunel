@@ -2,9 +2,8 @@
 //!
 //! On startup:
 //! 1. Connect to NATS
-//! 2. Subscribe to watch_all() on the kv_vhosts bucket
-//! 3. Full-scan all existing entries
-//! 4. Consume the watch stream for live updates
+//! 2. Subscribe to watch_all() on the kv_vhosts bucket (replays all current values)
+//! 3. Consume the watch stream for live updates
 //!
 //! Operations:
 //! - Put with status=Provisioning → load keypair, add to VhostRegistry, CAS to Active
@@ -41,10 +40,10 @@ pub struct VhostEntry {
 	pub signing_key_version: String,
 	/// Zitadel organization ID that owns this vhost.
 	pub org_id: String,
-	/// ISO 8601 timestamp of creation.
-	pub created_at: String,
-	/// ISO 8601 timestamp of last update.
-	pub updated_at: String,
+	/// Unix milliseconds timestamp of creation.
+	pub created_at: u64,
+	/// Unix milliseconds timestamp of last update.
+	pub updated_at: u64,
 }
 
 /// Mirror of VhostStatus from agentteam-core.
@@ -109,14 +108,11 @@ async fn run_once(nats_url: &str, services: &Arc<Services>) -> Result<(), Box<dy
 
 	let kv = js.get_key_value(KV_VHOSTS_BUCKET).await?;
 
-	// Start watch_all() first, then full_scan, then consume watch stream.
-	// This ensures no events are missed between scan and watch.
+	// watch_all() replays all current values (DeliverLastPerSubjectPolicy)
+	// before delivering live updates, so a separate full_scan is unnecessary.
 	let mut watcher = kv.watch_all().await?;
 
-	info!("NatsWatcher performing full scan of kv_vhosts...");
-	full_scan(&kv, services).await?;
-
-	info!("NatsWatcher watching for live updates...");
+	info!("NatsWatcher watching for updates (initial replay + live)...");
 	while let Some(entry) = watcher.next().await {
 		// Check if server is shutting down
 		if !services.server.running() {
@@ -136,10 +132,14 @@ async fn run_once(nats_url: &str, services: &Arc<Services>) -> Result<(), Box<dy
 		}
 	}
 
-	Ok(())
+	// Stream ended — NATS disconnected. Return error to trigger reconnect.
+	Err("NATS watcher stream closed unexpectedly".into())
 }
 
 /// Full scan: iterate all keys in the bucket and process each entry.
+/// Retained for manual recovery; not called during normal startup since
+/// watch_all() already replays all current values.
+#[allow(dead_code)]
 async fn full_scan(
 	kv: &jetstream::kv::Store,
 	services: &Arc<Services>,
@@ -307,7 +307,7 @@ async fn provision_vhost(
 	// Use entry.revision for compare-and-swap
 	let mut updated = vhost.clone();
 	updated.status = VhostStatus::Active;
-	updated.updated_at = timestamp_now();
+	updated.updated_at = now_millis();
 
 	let new_value = serde_json::to_vec(&updated)?;
 
@@ -425,53 +425,10 @@ fn remove_vhost(vhost: &VhostEntry, services: &Arc<Services>) {
 	debug!("NatsWatcher: removed vhost {server_name}");
 }
 
-/// Get current ISO 8601 timestamp (seconds since epoch as string).
-fn timestamp_now() -> String {
-	use std::time::SystemTime;
-
-	let duration = SystemTime::now()
-		.duration_since(SystemTime::UNIX_EPOCH)
-		.unwrap_or_default();
-
-	let secs = duration.as_secs();
-	// Simple ISO-8601 approximation in UTC
-	let days = secs / 86400;
-	let time_secs = secs % 86400;
-	let hours = time_secs / 3600;
-	let minutes = (time_secs % 3600) / 60;
-	let seconds = time_secs % 60;
-
-	// Days since epoch to Y-M-D (simplified)
-	let mut y = 1970_i64;
-	let mut remaining = days;
-	loop {
-		let days_in_year: u64 = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-			366
-		} else {
-			365
-		};
-		if remaining < days_in_year {
-			break;
-		}
-		remaining -= days_in_year;
-		y += 1;
-	}
-	let is_leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-	let days_in_months: [u64; 12] = [
-		31,
-		if is_leap { 29 } else { 28 },
-		31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-	];
-	let mut m = 0_usize;
-	for (i, &dm) in days_in_months.iter().enumerate() {
-		if remaining < dm {
-			m = i;
-			break;
-		}
-		remaining -= dm;
-	}
-	let d = remaining + 1;
-	let month = m + 1;
-
-	format!("{y:04}-{month:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+/// Get current Unix timestamp in milliseconds.
+fn now_millis() -> u64 {
+	std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_millis() as u64
 }

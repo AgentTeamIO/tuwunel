@@ -456,7 +456,7 @@ fn resolve_effective_server_name<'a>(
 	}
 
 	// Extract server_name from the raw JSON body if present
-	let requested_server_name = body
+	let server_name_field = body
 		.json_body
 		.as_ref()
 		.and_then(|json| {
@@ -465,18 +465,21 @@ fn resolve_effective_server_name<'a>(
 			} else {
 				None
 			}
-		})
-		.and_then(|v| {
-			if let CanonicalJsonValue::String(s) = v {
-				Some(s.as_str())
-			} else {
-				None
-			}
 		});
 
-	let Some(requested) = requested_server_name else {
+	let Some(value) = server_name_field else {
 		// No server_name field — use default (backward compatible)
 		return Ok(services.globals.server_name());
+	};
+
+	let requested = match value {
+		| CanonicalJsonValue::String(s) => s.as_str(),
+		| _ => {
+			return Err(Error::BadRequest(
+				ruma::api::client::error::ErrorKind::InvalidParam,
+				"server_name must be a string",
+			));
+		},
 	};
 
 	// Parse and validate the requested server name
