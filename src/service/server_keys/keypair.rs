@@ -69,8 +69,7 @@ fn remove(db: &Arc<Database>) {
 /// Returns a `VhostKeypair` containing the version, keypair, and verify keys.
 ///
 /// Used by admin API (Task 3.3) to register new vhosts.
-#[allow(dead_code)]
-pub(super) fn generate_vhost_keypair() -> Result<super::VhostKeypair> {
+pub fn generate_vhost_keypair() -> Result<super::VhostKeypair> {
 	let raw_keypair = Ed25519KeyPair::generate()
 		.map_err(|e| err!("Failed to generate vhost ed25519 keypair: {e:?}"))?;
 

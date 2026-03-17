@@ -1,6 +1,6 @@
 mod acquire;
 mod get;
-mod keypair;
+pub mod keypair;
 mod request;
 mod sign;
 mod verify;

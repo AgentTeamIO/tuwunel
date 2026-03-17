@@ -1427,6 +1427,14 @@ pub struct Config {
 	/// display: sensitive
 	pub emergency_password: Option<String>,
 
+	/// Bearer token for the vhost admin HTTP API (`/_admin/v1/vhosts`).
+	/// If unset, the admin API endpoints will reject all requests.
+	///
+	/// example: "sUp3r-s3cr3t-4dm1n-t0k3n"
+	///
+	/// display: sensitive
+	pub admin_token: Option<String>,
+
 	/// default: "/_matrix/push/v1/notify"
 	#[serde(default = "default_notification_push_path")]
 	pub notification_push_path: String,

@@ -247,6 +247,14 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.route("/_tuwunel/local_user_count", any(federation_disabled));
 	}
 
+	// Admin API for vhost management
+	router = router
+		.route("/_admin/v1/vhosts", post(server::create_vhost).get(server::list_vhosts))
+		.route(
+			"/_admin/v1/vhosts/{name}",
+			get(server::get_vhost).delete(server::delete_vhost),
+		);
+
 	if config.allow_legacy_media {
 		router = router
 			.ruma_route(&client::get_media_config_legacy_route)

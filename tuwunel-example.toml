@@ -1202,6 +1202,13 @@
 #
 #emergency_password =
 
+# Bearer token for the vhost admin HTTP API (`/_admin/v1/vhosts`).
+# If unset, the admin API endpoints will reject all requests.
+#
+# example: "sUp3r-s3cr3t-4dm1n-t0k3n"
+#
+#admin_token =
+
 # This item is undocumented. Please contribute documentation for it.
 #
 #notification_push_path = "/_matrix/push/v1/notify"

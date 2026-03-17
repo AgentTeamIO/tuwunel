@@ -20,6 +20,7 @@ pub(super) mod state;
 pub(super) mod state_ids;
 pub(super) mod user;
 pub(super) mod version;
+pub(super) mod vhost;
 pub(super) mod well_known;
 
 pub(super) use backfill::*;
@@ -44,6 +45,7 @@ pub(super) use state::*;
 pub(super) use state_ids::*;
 pub(super) use user::*;
 pub(super) use version::*;
+pub(super) use vhost::*;
 pub(super) use well_known::*;
 
 mod utils;
