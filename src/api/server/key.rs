@@ -14,7 +14,7 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use tuwunel_core::{Result, utils::timepoint_from_now};
+use tuwunel_core::{Err, Result, utils::timepoint_from_now};
 
 /// # `GET /_matrix/key/v2/server`
 ///
@@ -53,15 +53,9 @@ pub(crate) async fn get_server_keys_route(
 		match first_key {
 			| Some(key_id) => all_keys.remove_entry(&key_id).expect("key must exist"),
 			| None => {
-				// Fallback: no keys found for this vhost, use bootstrap
-				let bootstrap = services.globals.server_name().to_owned();
-				let mut bootstrap_keys = services
-					.server_keys
-					.verify_keys_for(&bootstrap)
-					.await;
-				let active_key_id = services.server_keys.active_key_id();
-				return build_response(&services, &bootstrap, bootstrap_keys.remove_entry(active_key_id)
-					.expect("active verify_key is missing"), bootstrap_keys);
+				// No keys found for this vhost — return 404 instead of silently
+				// falling back to bootstrap keys
+				return Err!(Request(NotFound("No keys found for this server")));
 			},
 		}
 	};

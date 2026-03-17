@@ -95,9 +95,12 @@ fn auth_server_checks(services: &Services, x_matrix: &XMatrix) -> Result {
 		return Err!(Config("allow_federation", "Federation is disabled."));
 	}
 
-	let destination = services.globals.server_name();
-	if x_matrix.destination.as_deref() != Some(destination) {
-		return Err!(Request(Forbidden("Invalid destination.")));
+	// Validate destination against all known vhosts (not just bootstrap server_name).
+	// Some federation implementations omit the destination field, so allow that case.
+	if let Some(dest) = x_matrix.destination.as_deref() {
+		if !services.globals.server_is_ours(dest) {
+			return Err!(Request(Forbidden("Invalid destination.")));
+		}
 	}
 
 	let origin = &x_matrix.origin;

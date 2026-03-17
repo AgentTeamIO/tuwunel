@@ -5,7 +5,7 @@ use std::{
 
 use futures::{FutureExt, pin_mut};
 use tuwunel_core::{
-	Error, Result, Server, debug, debug_error, debug_info, error, info,
+	Error, Result, Server, debug, debug_error, debug_info, error, info, warn,
 	utils::{BoolExt, future::OptionFutureExt},
 };
 use tuwunel_service::Services;
@@ -66,6 +66,11 @@ pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 	debug!("Starting...");
 
 	let services = Services::build(server).await?.start().await?;
+
+	// Warn if admin_token is not configured — admin API endpoints will be inaccessible
+	if services.server.config.admin_token.is_none() {
+		warn!("TUWUNEL_ADMIN_TOKEN not set — admin API endpoints will reject all requests");
+	}
 
 	#[cfg(all(feature = "systemd", target_os = "linux"))]
 	sd_notify::notify(false, &[sd_notify::NotifyState::Ready])

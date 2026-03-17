@@ -24,11 +24,13 @@ use tuwunel_core::{
 };
 use tuwunel_database::{Deserialized, Json, Map};
 
-/// Per-vhost keypair data: version string and the Ed25519 keypair.
+/// Per-vhost keypair data: version string, Ed25519 keypair, and raw DER bytes for persistence.
 pub struct VhostKeypair {
 	pub version: String,
 	pub keypair: Box<Ed25519KeyPair>,
 	pub verify_keys: VerifyKeys,
+	/// Raw DER bytes of the private key, needed for database persistence.
+	pub der: Vec<u8>,
 }
 
 pub struct Service {
@@ -45,6 +47,7 @@ pub struct Service {
 
 struct Data {
 	server_signingkeys: Arc<Map>,
+	global: Arc<Map>,
 }
 
 pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
@@ -58,14 +61,18 @@ impl crate::Service for Service {
 		let (keypair, verify_keys) = keypair::init(args.db)?;
 		debug_assert!(verify_keys.len() == 1, "only one active verify_key supported");
 
+		// Load persisted vhost keypairs from database
+		let vhost_keypairs = keypair::load_all_vhost_keypairs(args.db);
+
 		Ok(Arc::new(Self {
 			keypair,
 			verify_keys,
-			vhost_keypairs: RwLock::new(BTreeMap::new()),
+			vhost_keypairs: RwLock::new(vhost_keypairs),
 			minimum_valid,
 			services: args.services.clone(),
 			db: Data {
 				server_signingkeys: args.db["server_signingkeys"].clone(),
+				global: args.db["global"].clone(),
 			},
 		}))
 	}
@@ -95,12 +102,27 @@ pub fn active_verify_key(&self) -> (&ServerSigningKeyId, &VerifyKey) {
 		.expect("missing active verify_key")
 }
 
-/// Register a keypair for a virtual host. The keypair is generated in-memory
-/// (not persisted to the database — persistence is a later milestone).
+/// Get the list of vhost server names that have keypairs registered.
+/// Used during startup to populate the VhostRegistry.
+#[implement(Service)]
+#[must_use]
+pub fn vhost_server_names(&self) -> Vec<OwnedServerName> {
+	let map = self
+		.vhost_keypairs
+		.read()
+		.expect("vhost_keypairs lock poisoned");
+	map.keys().cloned().collect()
+}
+
+/// Register a keypair for a virtual host and persist it to the database.
 /// Returns false if the vhost already has a keypair registered.
 #[implement(Service)]
 pub fn add_vhost_keypair(&self, server_name: OwnedServerName, vhost_kp: VhostKeypair) -> bool {
 	use std::collections::btree_map::Entry;
+
+	// Persist to database before adding to in-memory map
+	keypair::save_vhost_keypair(&self.db.global, &server_name, &vhost_kp.version, &vhost_kp.der);
+
 	let mut map = self
 		.vhost_keypairs
 		.write()
@@ -114,9 +136,12 @@ pub fn add_vhost_keypair(&self, server_name: OwnedServerName, vhost_kp: VhostKey
 	}
 }
 
-/// Remove a keypair for a virtual host.
+/// Remove a keypair for a virtual host and delete from database.
 #[implement(Service)]
 pub fn remove_vhost_keypair(&self, server_name: &ServerName) -> bool {
+	// Remove from database
+	keypair::delete_vhost_keypair(&self.db.global, server_name);
+
 	let mut map = self
 		.vhost_keypairs
 		.write()

@@ -86,6 +86,67 @@ where
 		.await
 }
 
+/// Like `execute_on` but signs the request using a vhost origin key.
+#[implement(super::Service)]
+#[tracing::instrument(
+	name = "fed_vhost",
+	level = INFO_SPAN_LEVEL,
+	skip(self, client, request),
+)]
+pub async fn execute_on_vhost<T>(
+	&self,
+	client: &Client,
+	dest: &ServerName,
+	request: T,
+	vhost_origin: &ServerName,
+) -> Result<T::IncomingResponse>
+where
+	T: OutgoingRequest + Send,
+{
+	if !self.services.server.config.allow_federation {
+		return Err!(Config("allow_federation", "Federation is disabled."));
+	}
+
+	if self
+		.services
+		.server
+		.config
+		.forbidden_remote_server_names
+		.is_match(dest.host())
+	{
+		return Err!(Request(Forbidden(debug_warn!("Federation with {dest} is not allowed."))));
+	}
+
+	let actual = self
+		.services
+		.resolver
+		.get_actual_dest(dest)
+		.await?;
+
+	let request = self.prepare_vhost(&actual, dest, request, vhost_origin)?;
+	self.perform::<T>(&actual, dest, request, client)
+		.await
+}
+
+#[implement(super::Service)]
+fn prepare_vhost<T>(
+	&self,
+	actual: &ActualDest,
+	dest: &ServerName,
+	request: T,
+	vhost_origin: &ServerName,
+) -> Result<Request>
+where
+	T: OutgoingRequest + Send,
+{
+	let request = self.to_http_request_vhost::<T>(actual, dest, request, Some(vhost_origin))?;
+	let request = Request::try_from(request)?;
+	self.validate_url(request.url())?;
+	self.services.server.check_running()?;
+
+	Ok(request)
+}
+
 #[implement(super::Service)]
 async fn perform<T>(
 	&self,
@@ -253,19 +314,54 @@ where
 		.map_err(|e| err!(BadServerResponse("Invalid destination: {e:?}")))?;
 
 	if matches!(T::METADATA.authentication, AuthScheme::ServerSignatures) {
-		self.sign_request(&mut request, dest);
+		self.sign_request(&mut request, dest, None);
+	}
+
+	Ok(request)
+}
+
+/// Like `to_http_request` but allows specifying a vhost origin for signing.
+#[implement(super::Service)]
+fn to_http_request_vhost<T>(
+	&self,
+	actual: &ActualDest,
+	dest: &ServerName,
+	request: T,
+	vhost_origin: Option<&ServerName>,
+) -> Result<http::Request<Vec<u8>>>
+where
+	T: OutgoingRequest + Send,
+{
+	const VERSIONS: [MatrixVersion; 1] = [MatrixVersion::V1_11];
+	const SATIR: SendAccessToken<'_> = SendAccessToken::IfRequired(EMPTY);
+	let supported = SupportedVersions {
+		versions: VERSIONS.into(),
+		features: Default::default(),
+	};
+
+	let mut request = request
+		.try_into_http_request::<Vec<u8>>(actual.to_string().as_str(), SATIR, &supported)
+		.map_err(|e| err!(BadServerResponse("Invalid destination: {e:?}")))?;
+
+	if matches!(T::METADATA.authentication, AuthScheme::ServerSignatures) {
+		self.sign_request(&mut request, dest, vhost_origin);
 	}
 
 	Ok(request)
 }
 
 #[implement(super::Service)]
-fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerName) {
+fn sign_request(
+	&self,
+	http_request: &mut http::Request<Vec<u8>>,
+	dest: &ServerName,
+	vhost_origin: Option<&ServerName>,
+) {
 	type Member = (CanonicalJsonName, Value);
 	type Value = CanonicalJsonValue;
 	type Object = CanonicalJsonObject;
 
-	let origin = &self.services.server.name;
+	let origin = vhost_origin.unwrap_or(&self.services.server.name);
 	let body = http_request.body();
 	let uri = http_request
 		.uri()
@@ -296,10 +392,18 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 		authorization.into()
 	};
 
-	self.services
-		.server_keys
-		.sign_json(&mut req)
-		.expect("request signing failed");
+	// Use vhost-aware signing when a vhost origin is specified
+	if vhost_origin.is_some() {
+		self.services
+			.server_keys
+			.sign_json_for_vhost(&mut req, origin)
+			.expect("request signing failed");
+	} else {
+		self.services
+			.server_keys
+			.sign_json(&mut req)
+			.expect("request signing failed");
+	}
 
 	let signatures = req["signatures"]
 		.as_object()

@@ -1152,26 +1152,50 @@ impl Service {
 		server: OwnedServerName,
 		events: Vec<SendingEvent>,
 	) -> SendingResult {
-		let pdus: Vec<_> = events
+		use ruma::CanonicalJsonValue;
+		use serde_json::value::RawValue as RawJsonValue;
+
+		// Load PDU JSON and extract origin for vhost-aware signing.
+		// Group PDUs by their origin server_name so each transaction
+		// is signed with the correct vhost key.
+		let mut pdus_by_origin: BTreeMap<OwnedServerName, Vec<Box<RawJsonValue>>> = BTreeMap::new();
+
+		let pdu_ids: Vec<_> = events
 			.iter()
 			.filter_map(|pdu| match pdu {
 				| SendingEvent::Pdu(pdu) => Some(pdu),
 				| _ => None,
 			})
-			.stream()
-			.wide_filter_map(|pdu_id| {
-				self.services
-					.timeline
-					.get_pdu_json_from_id(pdu_id)
-					.ok()
-			})
-			.wide_then(|pdu| {
-				self.services
-					.federation
-					.format_pdu_into(pdu, None)
-			})
-			.collect()
-			.await;
+			.collect();
+
+		for pdu_id in pdu_ids {
+			let Ok(pdu_json) = self
+				.services
+				.timeline
+				.get_pdu_json_from_id(pdu_id)
+				.await
+			else {
+				continue;
+			};
+
+			// Extract origin from PDU JSON; fall back to bootstrap server_name
+			let origin = pdu_json
+				.get("origin")
+				.and_then(CanonicalJsonValue::as_str)
+				.and_then(|s| OwnedServerName::try_from(s).ok())
+				.unwrap_or_else(|| self.server.name.clone());
+
+			let formatted = self
+				.services
+				.federation
+				.format_pdu_into(pdu_json, None)
+				.await;
+
+			pdus_by_origin
+				.entry(origin)
+				.or_default()
+				.push(formatted);
+		}
 
 		let edus: Vec<Raw<Edu>> = events
 			.iter()
@@ -1183,43 +1207,99 @@ impl Service {
 			.filter_map(Result::ok)
 			.collect();
 
-		if pdus.is_empty() && edus.is_empty() {
+		if pdus_by_origin.is_empty() && edus.is_empty() {
 			return Ok(Destination::Federation(server));
 		}
 
-		let preimage = pdus
-			.iter()
-			.map(|raw| raw.get().as_bytes())
-			.chain(edus.iter().map(|raw| raw.json().get().as_bytes()));
-
-		let txn_hash = calculate_hash(preimage);
-		let txn_id = &*URL_SAFE_NO_PAD.encode(txn_hash);
-		let request = send_transaction_message::v1::Request {
-			transaction_id: txn_id.into(),
-			origin: self.server.name.clone(),
-			origin_server_ts: MilliSecondsSinceUnixEpoch::now(),
-			pdus,
-			edus,
+		// If all PDUs share the same origin (common case), send one transaction.
+		// Otherwise, send separate transactions per origin.
+		// EDUs are only included in the first (or bootstrap) transaction.
+		let origins: Vec<_> = if pdus_by_origin.is_empty() {
+			// EDU-only: use bootstrap origin
+			vec![self.server.name.clone()]
+		} else {
+			pdus_by_origin.keys().cloned().collect()
 		};
 
-		let result = self
-			.services
-			.federation
-			.execute_on(&self.services.client.sender, &server, request)
-			.await;
+		let mut edus_sent = false;
+		let mut had_error = false;
+		for origin in &origins {
+			let pdus = pdus_by_origin
+				.remove(origin)
+				.unwrap_or_default();
 
-		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
-			if let Err(e) = result {
-				warn!(
-					%txn_id, %server,
-					"error sending PDU {event_id} to remote server: {e:?}"
-				);
+			// Include EDUs only in the first transaction
+			let txn_edus = if !edus_sent {
+				edus_sent = true;
+				edus.clone()
+			} else {
+				Vec::new()
+			};
+
+			if pdus.is_empty() && txn_edus.is_empty() {
+				continue;
+			}
+
+			let preimage = pdus
+				.iter()
+				.map(|raw| raw.get().as_bytes())
+				.chain(txn_edus.iter().map(|raw| raw.json().get().as_bytes()));
+
+			let txn_hash = calculate_hash(preimage);
+			let txn_id = &*URL_SAFE_NO_PAD.encode(txn_hash);
+			let request = send_transaction_message::v1::Request {
+				transaction_id: txn_id.into(),
+				origin: origin.clone(),
+				origin_server_ts: MilliSecondsSinceUnixEpoch::now(),
+				pdus,
+				edus: txn_edus,
+			};
+
+			// Use vhost-aware signing if origin differs from bootstrap
+			let is_vhost = origin != &self.server.name
+				&& self.services.globals.server_is_ours(origin);
+			let result = if is_vhost {
+				self.services
+					.federation
+					.execute_on_vhost(
+						&self.services.client.sender,
+						&server,
+						request,
+						origin,
+					)
+					.await
+			} else {
+				self.services
+					.federation
+					.execute_on(&self.services.client.sender, &server, request)
+					.await
+			};
+
+			match result {
+				| Ok(resp) => {
+					for (event_id, result) in &resp.pdus {
+						if let Err(e) = result {
+							warn!(
+								%txn_id, %server, %origin,
+								"error sending PDU {event_id} to remote server: {e:?}"
+							);
+						}
+					}
+				},
+				| Err(error) => {
+					warn!(%server, %origin, "federation transaction failed: {error:?}");
+					had_error = true;
+				},
 			}
 		}
 
-		match result {
-			| Err(error) => Err((Destination::Federation(server), error)),
-			| Ok(_) => Ok(Destination::Federation(server)),
+		if had_error {
+			Err((
+				Destination::Federation(server),
+				err!(error!("One or more federation transactions failed")),
+			))
+		} else {
+			Ok(Destination::Federation(server))
 		}
 	}
 }

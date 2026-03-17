@@ -129,7 +129,15 @@ pub async fn build(server: Arc<Server>) -> Result<Arc<Self>> {
 		db,
 	});
 
-	Ok(services.set(res))
+	let result = services.set(res);
+
+	// Sync VhostRegistry with persisted vhost keypairs loaded during server_keys::build().
+	// This must happen after all services are constructed since globals is needed.
+	for name in result.server_keys.vhost_server_names() {
+		result.globals.vhosts.add(name);
+	}
+
+	Ok(result)
 }
 
 #[implement(Services)]
