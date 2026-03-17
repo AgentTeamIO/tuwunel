@@ -3,7 +3,7 @@ use std::fmt::Write;
 use axum::extract::State;
 use axum_client_ip::InsecureClientIp;
 use ruma::{
-	UserId,
+	CanonicalJsonValue, ServerName, UserId,
 	api::client::{
 		account::{
 			check_registration_token_validity, get_username_availability,
@@ -12,7 +12,7 @@ use ruma::{
 		uiaa::{AuthFlow, AuthType, UiaaInfo},
 	},
 };
-use tuwunel_core::{Err, Error, Result, debug_info, debug_warn, info, utils};
+use tuwunel_core::{Err, Error, Result, debug, debug_info, debug_warn, info, utils};
 use tuwunel_service::users::{Register, device::generate_refresh_token};
 
 use super::SESSION_ID_LENGTH;
@@ -163,6 +163,12 @@ pub(crate) async fn register_route(
 		return Err!(Request(GuestAccessForbidden("Guest registration is disabled.")));
 	}
 
+	// Multi-vhost support: extract optional server_name from JSON body.
+	// Only appservice requests may specify a server_name to register users
+	// on a specific vhost. Non-appservice requests always use the default.
+	let effective_server_name: &ServerName =
+		resolve_effective_server_name(&services, &body)?;
+
 	let user_id = match (body.username.as_ref(), is_guest) {
 		| (Some(username), false) => {
 			// workaround for https://github.com/matrix-org/matrix-appservice-irc/issues/1780 due to inactivity of fixing the issue
@@ -199,7 +205,7 @@ pub(crate) async fn register_route(
 
 			let proposed_user_id = match UserId::parse_with_server_name(
 				&body_username,
-				services.globals.server_name(),
+				effective_server_name,
 			) {
 				| Ok(user_id) => {
 					if let Err(e) = user_id.validate_strict() {
@@ -232,7 +238,7 @@ pub(crate) async fn register_route(
 		| _ => loop {
 			let proposed_user_id = UserId::parse_with_server_name(
 				utils::random_string(RANDOM_USER_ID_LENGTH).to_lowercase(),
-				services.globals.server_name(),
+				effective_server_name,
 			)?;
 
 			if !services.users.exists(&proposed_user_id).await {
@@ -428,4 +434,68 @@ pub(crate) async fn check_registration_token_validity(
 		.is_ok();
 
 	Ok(check_registration_token_validity::v1::Response { valid })
+}
+
+/// Resolve the effective server name for user registration.
+///
+/// If the request is from an appservice and contains a `server_name` field
+/// in the JSON body, validate that it belongs to this instance (via
+/// `server_is_ours()`). If valid, use it for user_id construction.
+///
+/// If `server_name` is not provided, or the request is not from an
+/// appservice, fall back to the default server name.
+///
+/// Returns an error if `server_name` is provided but not recognized.
+fn resolve_effective_server_name<'a>(
+	services: &'a tuwunel_service::Services,
+	body: &'a Ruma<register::v3::Request>,
+) -> Result<&'a ServerName> {
+	// Only appservice requests may specify a custom server_name
+	if body.appservice_info.is_none() {
+		return Ok(services.globals.server_name());
+	}
+
+	// Extract server_name from the raw JSON body if present
+	let requested_server_name = body
+		.json_body
+		.as_ref()
+		.and_then(|json| {
+			if let CanonicalJsonValue::Object(obj) = json {
+				obj.get("server_name")
+			} else {
+				None
+			}
+		})
+		.and_then(|v| {
+			if let CanonicalJsonValue::String(s) = v {
+				Some(s.as_str())
+			} else {
+				None
+			}
+		});
+
+	let Some(requested) = requested_server_name else {
+		// No server_name field — use default (backward compatible)
+		return Ok(services.globals.server_name());
+	};
+
+	// Parse and validate the requested server name
+	let server_name: &ServerName = requested
+		.try_into()
+		.map_err(|_e| {
+			debug_warn!("Invalid server_name in register request: {requested}");
+			Error::BadRequest(
+				ruma::api::client::error::ErrorKind::InvalidParam,
+				"Invalid server_name",
+			)
+		})?;
+
+	// Validate that this server name belongs to us (any vhost)
+	if !services.globals.server_is_ours(server_name) {
+		debug_warn!("Unknown server_name in register request: {server_name}");
+		return Err!(Request(Unknown("Unknown server_name: server is not responsible for this domain")));
+	}
+
+	debug!("Appservice register using vhost server_name: {server_name}");
+	Ok(server_name)
 }
