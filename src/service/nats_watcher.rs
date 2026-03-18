@@ -43,6 +43,8 @@ pub struct VhostEntry {
 	pub status: VhostStatus,
 	pub created_at: u64,
 	pub updated_at: u64,
+	#[serde(default)]
+	pub zitadel_sub: Option<String>,
 }
 
 impl VhostEntry {
