@@ -1444,6 +1444,12 @@ pub struct Config {
 	/// example: "nats://localhost:4222"
 	pub nats_url: Option<String>,
 
+	/// Pro tier domain suffix for vhost server_name derivation.
+	/// Used by NatsWatcher to reconstruct server_name from KV key (owner).
+	/// example: "agtm.app" → owner "qi" → server_name "qi.agtm.app"
+	#[serde(default = "default_pro_domain")]
+	pub pro_domain: String,
+
 	/// default: "/_matrix/push/v1/notify"
 	#[serde(default = "default_notification_push_path")]
 	pub notification_push_path: String,
@@ -3275,6 +3281,8 @@ fn default_servernameevent_data_cache_capacity() -> u32 {
 fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
 
 fn default_roomid_spacehierarchy_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
+
+fn default_pro_domain() -> String { "agtm.app".to_owned() }
 
 fn default_dns_cache_entries() -> u32 { 32768 }
 

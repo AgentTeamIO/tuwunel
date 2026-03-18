@@ -28,22 +28,33 @@ use tuwunel_core::{debug, debug_info, error, info, warn};
 
 use crate::Services;
 
-/// Mirror of the VhostEntry type from agentteam-core.
+/// Mirror of the VhostEntry type from agentteam-core (crates/core/src/types.rs).
 /// Kept in sync manually since Tuwunel is a separate workspace.
+/// Fields MUST match Core's VhostEntry exactly for serde compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VhostEntry {
 	pub server_name: String,
-	pub status: VhostStatus,
-	/// Base64-encoded DER bytes of the Ed25519 signing key.
+	pub owner: String,
+	pub tier: String,
+	/// Base64-encoded DER bytes of the Ed25519 signing key (ruma internal format).
 	pub signing_key_bytes: String,
-	/// Key version string (e.g. "aBcDeFgH").
-	pub signing_key_version: String,
-	/// Zitadel organization ID that owns this vhost.
-	pub org_id: String,
-	/// Unix milliseconds timestamp of creation.
+	/// Verify key in format "ed25519:{version}:{base64_pubkey}".
+	pub verify_key: String,
+	pub status: VhostStatus,
 	pub created_at: u64,
-	/// Unix milliseconds timestamp of last update.
 	pub updated_at: u64,
+}
+
+impl VhostEntry {
+	/// Extract the key version from verify_key "ed25519:{version}:{pubkey}".
+	pub fn signing_key_version(&self) -> Option<String> {
+		let parts: Vec<&str> = self.verify_key.splitn(3, ':').collect();
+		if parts.len() == 3 && parts[0] == "ed25519" {
+			Some(parts[1].to_string())
+		} else {
+			None
+		}
+	}
 }
 
 /// Mirror of VhostStatus from agentteam-core.
@@ -240,15 +251,17 @@ async fn handle_put(
 }
 
 /// Handle a Delete operation — remove the vhost from the registry.
+/// KV key is {owner} (e.g. "qi"), not server_name. Derive server_name via pro_domain.
 fn handle_delete(entry: &jetstream::kv::Entry, services: &Arc<Services>) {
-	let key = &entry.key;
-	debug_info!("NatsWatcher: vhost key {key} deleted, removing from registry");
+	let owner = &entry.key;
+	let pro_domain = &services.server.config.pro_domain;
+	let server_name_str = format!("{owner}.{pro_domain}");
+	debug_info!("NatsWatcher: vhost key {owner} deleted, removing {server_name_str} from registry");
 
-	// The key is the server_name
-	let server_name: OwnedServerName = match key.as_str().try_into() {
+	let server_name: OwnedServerName = match server_name_str.as_str().try_into() {
 		| Ok(sn) => sn,
 		| Err(e) => {
-			warn!("NatsWatcher: invalid server_name in deleted key {key}: {e}");
+			warn!("NatsWatcher: invalid derived server_name {server_name_str}: {e}");
 			return;
 		},
 	};
@@ -271,8 +284,13 @@ async fn provision_vhost(
 	// Decode the signing key DER bytes from base64
 	let der_bytes = base64::engine::general_purpose::STANDARD.decode(&vhost.signing_key_bytes)?;
 
+	// Extract key version from verify_key string "ed25519:{version}:{pubkey}"
+	let version = vhost
+		.signing_key_version()
+		.ok_or("invalid verify_key format: cannot extract version")?;
+
 	// Create the Ed25519KeyPair from DER bytes + version
-	let keypair = Ed25519KeyPair::from_der(&der_bytes, vhost.signing_key_version.clone())
+	let keypair = Ed25519KeyPair::from_der(&der_bytes, version.clone())
 		.map_err(|e| format!("Ed25519KeyPair::from_der failed: {e:?}"))?;
 
 	// Build verify keys
@@ -280,14 +298,14 @@ async fn provision_vhost(
 		key: Base64::new(keypair.public_key().to_vec()),
 	};
 
-	let key_id_str = format!("ed25519:{}", vhost.signing_key_version);
+	let key_id_str = format!("ed25519:{}", version);
 	let key_id = key_id_str
 		.try_into()
 		.map_err(|e| format!("invalid key ID: {e}"))?;
 	let verify_keys = [(key_id, verify_key)].into();
 
 	let vhost_kp = crate::server_keys::VhostKeypair {
-		version: vhost.signing_key_version.clone(),
+		version,
 		keypair: Box::new(keypair),
 		verify_keys,
 		der: der_bytes,
@@ -363,23 +381,33 @@ fn ensure_loaded(vhost: &VhostEntry, services: &Arc<Services>) {
 		},
 	};
 
-	let keypair =
-		match Ed25519KeyPair::from_der(&der_bytes, vhost.signing_key_version.clone()) {
-			| Ok(kp) => kp,
-			| Err(e) => {
-				warn!(
-					"NatsWatcher: failed to load keypair for {}: {e:?}",
-					vhost.server_name
-				);
-				return;
-			},
-		};
+	let version = match vhost.signing_key_version() {
+		| Some(v) => v,
+		| None => {
+			warn!(
+				"NatsWatcher: invalid verify_key format for {}: {}",
+				vhost.server_name, vhost.verify_key
+			);
+			return;
+		},
+	};
+
+	let keypair = match Ed25519KeyPair::from_der(&der_bytes, version.clone()) {
+		| Ok(kp) => kp,
+		| Err(e) => {
+			warn!(
+				"NatsWatcher: failed to load keypair for {}: {e:?}",
+				vhost.server_name
+			);
+			return;
+		},
+	};
 
 	let verify_key = VerifyKey {
 		key: Base64::new(keypair.public_key().to_vec()),
 	};
 
-	let key_id_str = format!("ed25519:{}", vhost.signing_key_version);
+	let key_id_str = format!("ed25519:{}", version);
 	let key_id = match key_id_str.try_into() {
 		| Ok(kid) => kid,
 		| Err(e) => {
@@ -393,7 +421,7 @@ fn ensure_loaded(vhost: &VhostEntry, services: &Arc<Services>) {
 	let verify_keys = [(key_id, verify_key)].into();
 
 	let vhost_kp = crate::server_keys::VhostKeypair {
-		version: vhost.signing_key_version.clone(),
+		version,
 		keypair: Box::new(keypair),
 		verify_keys,
 		der: der_bytes,
