@@ -64,6 +64,18 @@ impl<T> Args<T> {
 			.as_deref()
 			.ok_or(err!(Request(Forbidden("user must be authenticated and device identified"))))
 	}
+
+	/// Returns the vhost server_name for this request.
+	/// Derived from the authenticated user's server_name.
+	/// For appservice ghost users (e.g. @agent:qi.agtm.app), returns the vhost domain.
+	/// For regular users (e.g. @alice:agentteam.app), returns the bootstrap domain.
+	#[inline]
+	pub(crate) fn vhost(&self) -> &ServerName {
+		self.sender_user
+			.as_ref()
+			.map(|u| u.server_name())
+			.expect("user must be authenticated for vhost context")
+	}
 }
 
 impl<T> Deref for Args<T>

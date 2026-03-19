@@ -126,11 +126,24 @@ pub async fn create_hash_and_sign_event(
 				.expect("u64 to UInt")
 		});
 
+	// Determine the origin server_name for this event.
+	// For local users (regular or ghost), use sender.server_name() as the vhost.
+	// For remote users (federation make_join/make_leave/make_knock templates),
+	// derive from the room_id server_name (V1 rooms) or fall back to bootstrap.
+	let origin_server_name = if self.services.globals.server_is_ours(sender.server_name()) {
+		sender.server_name()
+	} else {
+		room_id
+			.server_name()
+			.filter(|sn| self.services.globals.server_is_ours(sn))
+			.unwrap_or_else(|| self.services.globals.server_name())
+	};
+
 	let mut pdu = PduEvent {
 		event_id: ruma::event_id!("$thiswillbereplaced").into(),
 		room_id: room_id.to_owned(),
 		sender: sender.to_owned(),
-		origin: Some(self.services.globals.server_name().to_owned()),
+		origin: Some(origin_server_name.to_owned()),
 		origin_server_ts,
 		kind: event_type,
 		content,
@@ -185,7 +198,7 @@ pub async fn create_hash_and_sign_event(
 	pdu.event_id = self
 		.services
 		.server_keys
-		.gen_id_hash_and_sign_event(&mut pdu_json, &room_version)?;
+		.gen_id_hash_and_sign_event_for_vhost(&mut pdu_json, &room_version, origin_server_name)?;
 
 	// Room id is event id for V12+
 	if matches!(version_rules.room_id_format, RoomIdFormatVersion::V2)

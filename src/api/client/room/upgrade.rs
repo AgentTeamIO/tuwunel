@@ -257,7 +257,7 @@ async fn upgrade_room_create_legacy(
 	predecessor: PreviousRoom,
 ) -> Result<(OwnedRoomId, RoomMutexGuard)> {
 	// Create a replacement room
-	let new_room_id = RoomId::new_v1(services.globals.server_name());
+	let new_room_id = RoomId::new_v1(sender_user.server_name());
 	let state_lock = services.state.mutex.lock(&new_room_id).await;
 	let _short_id = services
 		.short

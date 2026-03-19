@@ -2,7 +2,7 @@
 //!
 //! On startup:
 //! 1. Connect to NATS
-//! 2. Subscribe to watch_all() on the kv_vhosts bucket (replays all current values)
+//! 2. Subscribe to watch_with_history(">") on the kv_vhosts bucket (replays latest per key)
 //! 3. Consume the watch stream for live updates
 //!
 //! Operations:
@@ -45,6 +45,10 @@ pub struct VhostEntry {
 	pub updated_at: u64,
 	#[serde(default)]
 	pub zitadel_sub: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub customer_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub subscription_id: Option<String>,
 }
 
 impl VhostEntry {
@@ -121,9 +125,10 @@ async fn run_once(nats_url: &str, services: &Arc<Services>) -> Result<(), Box<dy
 
 	let kv = js.get_key_value(KV_VHOSTS_BUCKET).await?;
 
-	// watch_all() replays all current values (DeliverLastPerSubjectPolicy)
-	// before delivering live updates, so a separate full_scan is unnecessary.
-	let mut watcher = kv.watch_all().await?;
+	// watch_with_history(">") uses DeliverPolicy::LastPerSubject — replays the
+	// latest value for each key before delivering live updates. ">" matches all keys.
+	// NOTE: watch_all() uses DeliverPolicy::New and does NOT replay history.
+	let mut watcher = kv.watch_with_history(">").await?;
 
 	info!("NatsWatcher watching for updates (initial replay + live)...");
 	while let Some(entry) = watcher.next().await {
@@ -151,7 +156,7 @@ async fn run_once(nats_url: &str, services: &Arc<Services>) -> Result<(), Box<dy
 
 /// Full scan: iterate all keys in the bucket and process each entry.
 /// Retained for manual recovery; not called during normal startup since
-/// watch_all() already replays all current values.
+/// watch_with_history(">") replays the latest value for each key.
 #[allow(dead_code)]
 async fn full_scan(
 	kv: &jetstream::kv::Store,

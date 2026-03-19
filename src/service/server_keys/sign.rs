@@ -10,15 +10,31 @@ pub fn gen_id_hash_and_sign_event(
 	object: &mut CanonicalJsonObject,
 	room_version_id: &RoomVersionId,
 ) -> Result<OwnedEventId> {
+	self.gen_id_hash_and_sign_event_for_vhost(
+		object,
+		room_version_id,
+		self.services.globals.server_name(),
+	)
+}
+
+/// Generate event ID, hash, and sign using the specified vhost's keypair.
+/// Falls back to bootstrap keypair if the server name matches bootstrap.
+#[implement(super::Service)]
+pub fn gen_id_hash_and_sign_event_for_vhost(
+	&self,
+	object: &mut CanonicalJsonObject,
+	room_version_id: &RoomVersionId,
+	server_name: &ServerName,
+) -> Result<OwnedEventId> {
 	object.remove("event_id");
 
 	if room_version::rules(room_version_id)?
 		.event_format
 		.require_event_id
 	{
-		self.gen_id_hash_and_sign_event_v1(object, room_version_id)
+		self.gen_id_hash_and_sign_event_v1(object, room_version_id, server_name)
 	} else {
-		self.gen_id_hash_and_sign_event_v3(object, room_version_id)
+		self.gen_id_hash_and_sign_event_v3(object, room_version_id, server_name)
 	}
 }
 
@@ -27,6 +43,7 @@ fn gen_id_hash_and_sign_event_v1(
 	&self,
 	object: &mut CanonicalJsonObject,
 	room_version_id: &RoomVersionId,
+	server_name: &ServerName,
 ) -> Result<OwnedEventId> {
 	let event_id = gen_event_id(object, room_version_id)?;
 
@@ -34,7 +51,7 @@ fn gen_id_hash_and_sign_event_v1(
 
 	self.services
 		.server_keys
-		.hash_and_sign_event(object, room_version_id)?;
+		.hash_and_sign_event_for_vhost(object, room_version_id, server_name)?;
 
 	Ok(event_id)
 }
@@ -44,10 +61,11 @@ fn gen_id_hash_and_sign_event_v3(
 	&self,
 	object: &mut CanonicalJsonObject,
 	room_version_id: &RoomVersionId,
+	server_name: &ServerName,
 ) -> Result<OwnedEventId> {
 	self.services
 		.server_keys
-		.hash_and_sign_event(object, room_version_id)?;
+		.hash_and_sign_event_for_vhost(object, room_version_id, server_name)?;
 
 	let event_id = gen_event_id(object, room_version_id)?;
 

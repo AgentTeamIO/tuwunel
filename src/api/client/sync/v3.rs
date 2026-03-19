@@ -570,7 +570,7 @@ async fn handle_left_room(
 		// For rejected invites, deleted, missing, or broken room state this is the last
 		// resort to convey a the minimum of information to the client.
 		let event = PduEvent {
-			event_id: EventId::new(services.globals.server_name()),
+			event_id: EventId::new(sender_user.server_name()),
 			origin_server_ts: utils::millis_since_unix_epoch().try_into()?,
 			kind: RoomMember,
 			state_key: Some(sender_user.as_str().into()),

@@ -1209,6 +1209,22 @@
 #
 #admin_token =
 
+# NATS server URL for the vhost watcher (NatsWatcher).
+# When set, Tuwunel will connect to NATS and watch the `kv_vhosts`
+# bucket for dynamic vhost provisioning.
+# If unset, NatsWatcher is disabled and vhosts are managed only
+# via the admin API.
+#
+# example: "nats://localhost:4222"
+#
+#nats_url =
+
+# Pro tier domain suffix for vhost server_name derivation.
+# Used by NatsWatcher to reconstruct server_name from KV key (owner).
+# example: "agtm.app" → owner "qi" → server_name "qi.agtm.app"
+#
+#pro_domain =
+
 # This item is undocumented. Please contribute documentation for it.
 #
 #notification_push_path = "/_matrix/push/v1/notify"

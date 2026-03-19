@@ -16,7 +16,9 @@ use tuwunel_core::{
 	implement, info,
 	matrix::event::gen_event_id,
 	pdu::{PduBuilder, PduEvent},
-	trace, utils, warn,
+	trace,
+	utils::{self, ReadyExt},
+	warn,
 };
 
 use super::Service;
@@ -89,13 +91,15 @@ pub async fn knock(
 		return Err!(Request(Forbidden("You cannot knock on a room you are banned from.")));
 	}
 
-	let server_in_room = self
+	// Check if ANY local vhost is in this room (not just bootstrap)
+	let any_local_server_in_room = self
 		.services
 		.state_cache
-		.server_in_room(self.services.globals.server_name(), room_id)
+		.room_servers(room_id)
+		.ready_any(|s| self.services.globals.server_is_ours(s))
 		.await;
 
-	let local_knock = server_in_room
+	let local_knock = any_local_server_in_room
 		|| servers.is_empty()
 		|| (servers.len() == 1 && self.services.globals.server_is_ours(&servers[0]));
 
@@ -210,15 +214,12 @@ async fn knock_room_helper_local(
 		err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
 	})?;
 
+	// Use sender's server_name as origin for vhost-aware federation signing
+	let origin_server_name = sender_user.server_name();
+
 	knock_event_stub.insert(
 		"origin".into(),
-		CanonicalJsonValue::String(
-			self.services
-				.globals
-				.server_name()
-				.as_str()
-				.to_owned(),
-		),
+		CanonicalJsonValue::String(origin_server_name.as_str().to_owned()),
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".into(),
@@ -270,7 +271,7 @@ async fn knock_room_helper_local(
 	// to be present
 	self.services
 		.server_keys
-		.hash_and_sign_event(&mut knock_event_stub, &room_version_id)?;
+		.hash_and_sign_event_for_vhost(&mut knock_event_stub, &room_version_id, origin_server_name)?;
 
 	// Generate event id
 	let event_id = gen_event_id(&knock_event_stub, &room_version_id)?;
@@ -383,15 +384,12 @@ async fn knock_room_helper_remote(
 			err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
 		})?;
 
+	// Use sender's server_name as origin for vhost-aware federation signing
+	let origin_server_name = sender_user.server_name();
+
 	knock_event_stub.insert(
 		"origin".into(),
-		CanonicalJsonValue::String(
-			self.services
-				.globals
-				.server_name()
-				.as_str()
-				.to_owned(),
-		),
+		CanonicalJsonValue::String(origin_server_name.as_str().to_owned()),
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".into(),
@@ -443,7 +441,7 @@ async fn knock_room_helper_remote(
 	// to be present
 	self.services
 		.server_keys
-		.hash_and_sign_event(&mut knock_event_stub, &room_version_id)?;
+		.hash_and_sign_event_for_vhost(&mut knock_event_stub, &room_version_id, origin_server_name)?;
 
 	// Generate event id
 	let event_id = gen_event_id(&knock_event_stub, &room_version_id)?;

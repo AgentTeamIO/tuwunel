@@ -19,7 +19,7 @@ use tuwunel_core::{
 	matrix::{PduCount, pdu::check_rules, room_version},
 	pdu::PduBuilder,
 	utils::{
-		self, FutureBoolExt,
+		self, FutureBoolExt, ReadyExt,
 		future::{ReadyBoolExt, TryExtExt},
 	},
 	warn,
@@ -88,11 +88,15 @@ pub async fn leave(
 		)
 		.await;
 
-	let dont_have_room = self
+	// Check if ANY local vhost is in this room (not just bootstrap)
+	let any_local_server_in_room = self
 		.services
 		.state_cache
-		.server_in_room(self.services.globals.server_name(), room_id)
-		.is_false()
+		.room_servers(room_id)
+		.ready_any(|s| self.services.globals.server_is_ours(s))
+		.await;
+
+	let dont_have_room = ready(!any_local_server_in_room)
 		.and(ready(member_event.as_ref().is_err()));
 
 	let not_knocked = self
@@ -324,15 +328,12 @@ async fn remote_leave(
 		})?,
 	);
 
+	// Use user's server_name as origin for vhost-aware federation signing
+	let origin_server_name = user_id.server_name();
+
 	event.insert(
 		"origin".into(),
-		CanonicalJsonValue::String(
-			self.services
-				.globals
-				.server_name()
-				.as_str()
-				.to_owned(),
-		),
+		CanonicalJsonValue::String(origin_server_name.as_str().to_owned()),
 	);
 
 	event.insert(
@@ -351,7 +352,7 @@ async fn remote_leave(
 	let event_id = self
 		.services
 		.server_keys
-		.gen_id_hash_and_sign_event(&mut event, &room_version_id)?;
+		.gen_id_hash_and_sign_event_for_vhost(&mut event, &room_version_id, origin_server_name)?;
 
 	check_rules(&event, &room_version_rules.event_format)?;
 

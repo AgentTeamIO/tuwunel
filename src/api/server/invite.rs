@@ -114,9 +114,10 @@ pub(crate) async fn create_invite_route(
 		.acl_check(invited_user.server_name(), &body.room_id)
 		.await?;
 
+	// Co-sign with the invited user's vhost keypair
 	services
 		.server_keys
-		.hash_and_sign_event(&mut signed_event, &body.room_version)
+		.hash_and_sign_event_for_vhost(&mut signed_event, &body.room_version, invited_user.server_name())
 		.map_err(|e| err!(Request(InvalidParam("Failed to sign event: {e}"))))?;
 
 	// Generate event id

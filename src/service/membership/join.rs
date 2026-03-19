@@ -103,13 +103,17 @@ pub async fn join(
 		return Err!(Request(Forbidden("You are banned from the room.")));
 	}
 
-	let server_in_room = self
+	// Check if ANY of our vhosts has a presence in this room (not just bootstrap).
+	// With multi-vhost, a room may only have members from a vhost like qi.agtm.app
+	// without any members from the bootstrap server agentteam.app.
+	let any_local_server_in_room = self
 		.services
 		.state_cache
-		.server_in_room(self.services.globals.server_name(), room_id)
+		.room_servers(room_id)
+		.ready_any(|s| self.services.globals.server_is_ours(s))
 		.await;
 
-	let local_join = server_in_room
+	let local_join = any_local_server_in_room
 		|| servers.is_empty()
 		|| (servers.len() == 1 && self.services.globals.server_is_ours(&servers[0]));
 
@@ -728,15 +732,12 @@ async fn create_join_event(
 		})?,
 	);
 
+	// Use sender's server_name as origin for vhost-aware federation signing
+	let origin_server_name = sender_user.server_name();
+
 	event.insert(
 		"origin".into(),
-		CanonicalJsonValue::String(
-			self.services
-				.globals
-				.server_name()
-				.as_str()
-				.to_owned(),
-		),
+		CanonicalJsonValue::String(origin_server_name.as_str().to_owned()),
 	);
 
 	event.insert(
@@ -755,7 +756,7 @@ async fn create_join_event(
 	let event_id = self
 		.services
 		.server_keys
-		.gen_id_hash_and_sign_event(&mut event, room_version_id)?;
+		.gen_id_hash_and_sign_event_for_vhost(&mut event, room_version_id, origin_server_name)?;
 
 	check_rules(&event, &room_version_rules.event_format)?;
 

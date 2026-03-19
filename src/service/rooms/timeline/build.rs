@@ -148,9 +148,10 @@ pub async fn build_and_append_pdu(
 		servers.insert(state_key_uid.server_name().to_owned());
 	}
 
-	// Remove our server from the server list since it will be added to it by
-	// room_servers() and/or the if statement above
-	servers.remove(self.services.globals.server_name());
+	// Remove all our vhosts from the server list — with multi-vhost, the room may
+	// contain members from multiple local vhosts (e.g. agentteam.app + qi.agtm.app).
+	// We must not attempt to federate with ourselves.
+	servers.retain(|s| !self.services.globals.server_is_ours(s));
 
 	self.services
 		.sending

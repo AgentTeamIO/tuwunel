@@ -170,9 +170,17 @@ async fn create_join_event(
 		}
 	}
 
+	// Co-sign with the vhost keypair that hosts this room.
+	// For V1 rooms the server_name is embedded in room_id; for V2+ rooms
+	// (no server part) fall back to bootstrap.
+	let co_sign_server = room_id
+		.server_name()
+		.filter(|sn| services.globals.server_is_ours(sn))
+		.unwrap_or_else(|| services.globals.server_name());
+
 	services
 		.server_keys
-		.hash_and_sign_event(&mut value, &room_version)
+		.hash_and_sign_event_for_vhost(&mut value, &room_version, co_sign_server)
 		.map_err(|e| err!(Request(InvalidParam(warn!("Failed to sign send_join event: {e}")))))?;
 
 	let origin: OwnedServerName = serde_json::from_value(

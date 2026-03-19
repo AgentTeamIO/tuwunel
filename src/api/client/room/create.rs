@@ -4,7 +4,7 @@ use axum::extract::State;
 use futures::FutureExt;
 use ruma::{
 	CanonicalJsonObject, EventEncryptionAlgorithm, Int, OwnedRoomAliasId, OwnedRoomId,
-	OwnedUserId, RoomId, RoomVersionId,
+	OwnedUserId, RoomId, RoomVersionId, ServerName,
 	api::client::room::{
 		self, create_room,
 		create_room::v3::{CreationContent, RoomPreset},
@@ -74,7 +74,7 @@ pub(crate) async fn create_room_route(
 	let alias = body
 		.room_alias_name
 		.as_ref()
-		.map_async(|alias| room_alias_check(&services, alias, body.appservice_info.as_ref()));
+		.map_async(|alias| room_alias_check(&services, alias, body.appservice_info.as_ref(), body.vhost()));
 
 	// Determine room version
 	let (room_version, version_rules) = body
@@ -539,8 +539,8 @@ async fn create_create_event_legacy(
 	_version_rules: &RoomVersionRules,
 ) -> Result<(OwnedRoomId, RoomMutexGuard)> {
 	let room_id: OwnedRoomId = match &body.room_id {
-		| None => RoomId::new_v1(&services.server.name),
-		| Some(custom_id) => custom_room_id_check(services, custom_id).await?,
+		| None => RoomId::new_v1(body.vhost()),
+		| Some(custom_id) => custom_room_id_check(services, custom_id, body.vhost()).await?,
 	};
 
 	let state_lock = services.state.mutex.lock(&room_id).await;
@@ -698,6 +698,7 @@ async fn room_alias_check(
 	services: &Services,
 	room_alias_name: &str,
 	appservice_info: Option<&RegistrationInfo>,
+	vhost: &ServerName,
 ) -> Result<OwnedRoomAliasId> {
 	// Basic checks on the room alias validity
 	if room_alias_name.contains(':') {
@@ -720,8 +721,7 @@ async fn room_alias_check(
 		return Err!(Request(Unknown("Room alias name is forbidden.")));
 	}
 
-	let server_name = services.globals.server_name();
-	let full_room_alias = OwnedRoomAliasId::parse(format!("#{room_alias_name}:{server_name}"))
+	let full_room_alias = OwnedRoomAliasId::parse(format!("#{room_alias_name}:{vhost}"))
 		.map_err(|e| {
 			err!(Request(InvalidParam(debug_error!(
 				?e,
@@ -757,7 +757,7 @@ async fn room_alias_check(
 }
 
 /// if a room is being created with a custom room ID, run our checks against it
-async fn custom_room_id_check(services: &Services, custom_room_id: &str) -> Result<OwnedRoomId> {
+async fn custom_room_id_check(services: &Services, custom_room_id: &str, vhost: &ServerName) -> Result<OwnedRoomId> {
 	// apply forbidden room alias checks to custom room IDs too
 	if services
 		.config
@@ -778,8 +778,7 @@ async fn custom_room_id_check(services: &Services, custom_room_id: &str) -> Resu
 		)));
 	}
 
-	let server_name = services.globals.server_name();
-	let full_room_id = format!("!{custom_room_id}:{server_name}");
+	let full_room_id = format!("!{custom_room_id}:{vhost}");
 
 	let room_id = OwnedRoomId::parse(full_room_id)
 		.inspect(|full_room_id| debug_info!(?full_room_id, "Full custom room ID"))
