@@ -25,7 +25,12 @@ pub(super) async fn auth_server(
 	let x_matrix = parse_x_matrix(request).await?;
 	auth_server_checks(services, &x_matrix)?;
 
-	let destination = services.globals.server_name();
+	// Use the destination from X-Matrix header (what the sender signed), falling
+	// back to bootstrap when the remote omits it (permitted by older spec versions).
+	let destination = x_matrix
+		.destination
+		.as_deref()
+		.unwrap_or_else(|| services.globals.server_name());
 	let origin = &x_matrix.origin;
 	let signature_uri = request
 		.parts
