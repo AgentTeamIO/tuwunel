@@ -464,6 +464,10 @@ pub(super) async fn force_join_all_local_users(
 		.collect::<Vec<_>>()
 		.await
 	{
+		if user_id == &self.services.globals.server_user {
+			continue;
+		}
+
 		match self
 			.services
 			.membership

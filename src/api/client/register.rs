@@ -387,7 +387,7 @@ pub(crate) async fn register_route(
 	if body.appservice_info.is_none() && (!is_guest || services.config.log_guest_registrations) {
 		let mut notice = String::from(if is_guest { "New guest user" } else { "New user" });
 
-		write!(notice, " registered on this server from IP {client}")?;
+		write!(notice, " \"{user_id}\" registered on this server from IP {client}")?;
 
 		if let Some(device_name) = body.initial_device_display_name.as_deref() {
 			write!(notice, " with device name {device_name}")?;
