@@ -10,8 +10,17 @@ pub(super) async fn collect(
 	conn: &Connection,
 ) -> Result<Option<response::ToDevice>> {
 	let Some(sender_device) = sender_device else {
+		tracing::info!(%sender_user, "v5 to_device: no sender_device, skipping");
 		return Ok(None);
 	};
+
+	tracing::info!(
+		%sender_user,
+		%sender_device,
+		globalsince = conn.globalsince,
+		next_batch = conn.next_batch,
+		"v5 to_device: removing events <= globalsince, then querying"
+	);
 
 	services
 		.users
@@ -24,6 +33,13 @@ pub(super) async fn collect(
 		.map(at!(1))
 		.collect()
 		.await;
+
+	tracing::info!(
+		%sender_user,
+		%sender_device,
+		event_count = events.len(),
+		"v5 to_device: collected events"
+	);
 
 	let to_device = events
 		.is_empty()

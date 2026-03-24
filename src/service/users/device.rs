@@ -310,6 +310,15 @@ pub fn add_to_device_event(
 ) {
 	let count = self.services.globals.next_count();
 
+	tracing::info!(
+		%sender,
+		%target_user_id,
+		%target_device_id,
+		counter = *count,
+		%event_type,
+		"add_to_device_event: storing event"
+	);
+
 	let key = (target_user_id, target_device_id, *count);
 	self.db.todeviceid_events.put(
 		key,
@@ -333,12 +342,45 @@ pub fn get_to_device_events<'a>(
 
 	let from = (user_id, device_id, since.map_or(0, |since| since.saturating_add(1)));
 
+	tracing::info!(
+		%user_id,
+		%device_id,
+		?since,
+		?to,
+		from_counter = since.map_or(0, |since| since.saturating_add(1)),
+		"get_to_device_events: querying range"
+	);
+
 	self.db
 		.todeviceid_events
 		.stream_from(&from)
+		.map(|r| {
+			if let Err(ref e) = r {
+				tracing::warn!(
+					error = %e,
+					"get_to_device_events: deserialization error (event will be skipped)"
+				);
+			}
+			r
+		})
 		.ignore_err()
 		.ready_take_while(move |((user_id_, device_id_, count), _): &(Key<'_>, _)| {
-			user_id == *user_id_ && device_id == *device_id_ && to.is_none_or(|to| *count <= to)
+			let matches = user_id == *user_id_ && device_id == *device_id_ && to.is_none_or(|to| *count <= to);
+			if !matches {
+				tracing::debug!(
+					%user_id_,
+					%device_id_,
+					%count,
+					"get_to_device_events: take_while stopped"
+				);
+			}
+			matches
+		})
+		.inspect(move |((_, _, count), _)| {
+			tracing::info!(
+				%count,
+				"get_to_device_events: yielding event"
+			);
 		})
 		.map(|((_, _, count), event)| (count, event))
 }
@@ -356,6 +398,7 @@ pub async fn remove_to_device_events<Until>(
 
 	let until = until.into().unwrap_or(u64::MAX);
 	let from = (user_id, device_id, until);
+	let mut removed_count: u64 = 0;
 	self.db
 		.todeviceid_events
 		.rev_keys_from(&from)
@@ -364,9 +407,18 @@ pub async fn remove_to_device_events<Until>(
 			user_id == *user_id_ && device_id == *device_id_
 		})
 		.ready_for_each(|key: Key<'_>| {
+			removed_count += 1;
 			self.db.todeviceid_events.del(key);
 		})
 		.await;
+
+	tracing::info!(
+		%user_id,
+		%device_id,
+		%until,
+		%removed_count,
+		"remove_to_device_events: cleaned up"
+	);
 }
 
 #[implement(super::Service)]

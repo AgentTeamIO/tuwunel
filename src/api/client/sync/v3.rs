@@ -401,12 +401,24 @@ async fn build_sync_events(
 		.map(ToOwned::to_owned)
 		.collect::<HashSet<_>>();
 
-	let to_device_events = sender_device.map_async(|sender_device| {
-		services
+	let to_device_events = sender_device.map_async(|sender_device| async move {
+		let events: Vec<_> = services
 			.users
 			.get_to_device_events(sender_user, sender_device, Some(since), Some(next_batch))
 			.map(at!(1))
-			.collect::<Vec<_>>()
+			.collect()
+			.await;
+
+		tracing::info!(
+			%sender_user,
+			%sender_device,
+			%since,
+			%next_batch,
+			event_count = events.len(),
+			"sync: to_device_events collected"
+		);
+
+		events
 	});
 
 	let device_one_time_keys_count = sender_device.map_async(|sender_device| {

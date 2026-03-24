@@ -35,6 +35,17 @@ pub(crate) async fn send_event_to_device_route(
 
 	for (target_user_id, map) in &body.messages {
 		for (target_device_id_maybe, event) in map {
+			tracing::info!(
+				%sender_user,
+				?sender_device,
+				%target_user_id,
+				?target_device_id_maybe,
+				event_type = %body.event_type,
+				txn_id = %body.txn_id,
+				is_local = services.globals.user_is_local(target_user_id),
+				"send_to_device: processing event"
+			);
+
 			if !services.globals.user_is_local(target_user_id) {
 				let mut map = BTreeMap::new();
 				map.insert(target_device_id_maybe.clone(), event.clone());
