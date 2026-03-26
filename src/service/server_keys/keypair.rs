@@ -149,7 +149,13 @@ pub(super) fn delete_vhost_keypair(global: &Arc<Map>, server_name: &ServerName) 
 	let mut names = load_vhost_names(global);
 	let name_str = server_name.to_string();
 	names.retain(|n| n != &name_str);
-	global.raw_put(VHOST_NAMES_KEY, &names);
+	if names.is_empty() {
+		// Remove the key entirely — serializing an empty Vec produces bytes
+		// that deserialize as vec![""] due to the custom SEP-based format.
+		global.remove(VHOST_NAMES_KEY);
+	} else {
+		global.raw_put(VHOST_NAMES_KEY, &names);
+	}
 
 	debug!("Deleted persisted vhost keypair for {server_name}");
 }
@@ -162,6 +168,9 @@ fn load_vhost_names(global: &Arc<Map>) -> Vec<String> {
 		.get_blocking(VHOST_NAMES_KEY)
 		.deserialized::<Vec<String>>()
 		.unwrap_or_default()
+		.into_iter()
+		.filter(|s| !s.is_empty())
+		.collect()
 }
 
 /// Load all persisted vhost keypairs from the `global` database tree.
