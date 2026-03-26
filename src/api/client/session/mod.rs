@@ -166,7 +166,11 @@ pub(crate) async fn login_route(
 
 	info!("{user_id} logged in");
 
-	let home_server = services.server.name.clone().into();
+	let home_server = body
+		.host_server_name
+		.clone()
+		.unwrap_or_else(|| services.server.name.clone())
+		.into();
 
 	// send client well-known if specified so the client knows to reconfigure itself
 	let well_known: Option<DiscoveryInfo> = services

@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use jwt::{Algorithm, DecodingKey, Validation, decode};
 use ruma::{
-	OwnedUserId, UserId,
+	OwnedUserId, ServerName, UserId,
 	api::client::session::login::v3::{Request, Token},
 };
 use serde::Deserialize;
