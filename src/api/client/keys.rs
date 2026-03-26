@@ -144,42 +144,58 @@ pub(crate) async fn claim_keys_route(
 ///
 /// Uploads end-to-end key information for the sender user.
 ///
-/// - Requires UIAA to verify password
+/// - Requires UIAA to verify password unless called from an appservice with
+///   MSC4190 (`device_management`) enabled, which skips UIA unconditionally.
 pub(crate) async fn upload_signing_keys_route(
 	State(services): State<crate::State>,
 	body: Ruma<upload_signing_keys::v3::Request>,
 ) -> Result<upload_signing_keys::v3::Response> {
+	// MSC4190: appservice with device_management enabled skips UIA entirely,
+	// even when cross-signing keys already exist on the homeserver.
+	let appservice_device_mgmt = body
+		.appservice_info
+		.as_ref()
+		.is_some_and(|appservice| appservice.registration.device_management);
+
 	// Access token is required for this endpoint regardless of conditional UIAA so
 	// we'll always have a sender_user.
-	match check_for_new_keys(
-		services,
-		body.sender_user(),
-		body.self_signing_key.as_ref(),
-		body.user_signing_key.as_ref(),
-		body.master_key.as_ref(),
-	)
-	.await
-	.inspect_err(|e| debug_error!(?e))
-	{
-		| Ok(exists) => {
-			if let Some(result) = exists {
-				// No-op, they tried to reupload the same set of keys
-				// (lost connection for example)
-				return Ok(result);
-			}
+	if !appservice_device_mgmt {
+		match check_for_new_keys(
+			services,
+			body.sender_user(),
+			body.self_signing_key.as_ref(),
+			body.user_signing_key.as_ref(),
+			body.master_key.as_ref(),
+		)
+		.await
+		.inspect_err(|e| debug_error!(?e))
+		{
+			| Ok(exists) => {
+				if let Some(result) = exists {
+					// No-op, they tried to reupload the same set of keys
+					// (lost connection for example)
+					return Ok(result);
+				}
 
-			// Some of the keys weren't found, so we let them upload
-			debug!("Skipping UIA in accordance with MSC3967, user had no existing keys");
-		},
-		| _ => {
-			let authed_user = auth_uiaa(&services, &body).await?;
-			assert_eq!(
-				body.sender_user(),
-				authed_user,
-				"Expected UIAA of {0} and not {authed_user}",
-				body.sender_user(),
-			);
-		},
+				// Some of the keys weren't found, so we let them upload
+				debug!("Skipping UIA in accordance with MSC3967, user had no existing keys");
+			},
+			| _ => {
+				let authed_user = auth_uiaa(&services, &body).await?;
+				assert_eq!(
+					body.sender_user(),
+					authed_user,
+					"Expected UIAA of {0} and not {authed_user}",
+					body.sender_user(),
+				);
+			},
+		}
+	} else {
+		debug!(
+			"Skipping UIAA for {} cross-signing key upload as this is from an appservice and \
+			 MSC4190 is enabled",
+			body.sender_user()
+		);
 	}
 
 	services
