@@ -175,6 +175,16 @@ impl Args {
 			.extend(name.iter().copied().map(ToOwned::to_owned));
 		args.option
 			.push("server_name=\"localhost\"".into());
+
+		// Use a temp directory for tests so they don't require root permissions
+		// (the default /var/lib/tuwunel is root-owned on most systems).
+		let test_name = name.first().copied().unwrap_or("test");
+		let db_path = std::env::temp_dir().join(format!("tuwunel-test-{test_name}"));
+		args.option.push(format!(
+			"database_path=\"{}\"",
+			db_path.to_string_lossy()
+		));
+
 		args
 	}
 }
