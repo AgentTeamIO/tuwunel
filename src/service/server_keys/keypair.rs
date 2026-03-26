@@ -112,15 +112,20 @@ fn vhost_db_key(server_name: &ServerName) -> Vec<u8> {
 }
 
 /// Persist a vhost keypair to the `global` database tree and update the names index.
+///
+/// NOTE: Conduwuit's custom DB serializer doesn't support `Vec<u8>` (panics on
+/// `deserialize_u8`). We store DER bytes as base64 strings instead.
 pub(super) fn save_vhost_keypair(
 	global: &Arc<Map>,
 	server_name: &ServerName,
 	version: &str,
 	der_bytes: &[u8],
 ) {
-	// Store the keypair data
+	use base64::Engine;
+	// Store version + base64-encoded DER (avoid Vec<u8> which panics the DB deserializer)
 	let key = vhost_db_key(server_name);
-	let value: (String, Vec<u8>) = (version.to_owned(), der_bytes.to_vec());
+	let der_b64 = base64::engine::general_purpose::STANDARD.encode(der_bytes);
+	let value: (String, String) = (version.to_owned(), der_b64);
 	global.raw_put(&key, &value);
 
 	// Update the names index
@@ -181,11 +186,21 @@ pub(super) fn load_all_vhost_keypairs(
 		};
 
 		let key = vhost_db_key(&server_name);
+		// Load version + base64-encoded DER (matching save_vhost_keypair format)
 		let (version, der): (String, Vec<u8>) = match global
 			.get_blocking(&key)
-			.deserialized::<(String, Vec<u8>)>()
+			.deserialized::<(String, String)>()
 		{
-			| Ok(v) => v,
+			| Ok((v, der_b64)) => {
+				use base64::Engine;
+				match base64::engine::general_purpose::STANDARD.decode(&der_b64) {
+					| Ok(der_bytes) => (v, der_bytes),
+					| Err(e) => {
+						warn!("Failed to decode vhost keypair DER for {server_name}: {e}");
+						continue;
+					},
+				}
+			},
 			| Err(e) => {
 				warn!("Failed to load vhost keypair for {server_name}: {e}");
 				continue;
