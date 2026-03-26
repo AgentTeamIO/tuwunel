@@ -22,10 +22,11 @@ pub(super) fn handle_login(
 		return Err!(Request(MissingToken("Missing appservice token.")));
 	};
 
+	let server_name = body.request_server_name(services);
 	let user_id = if let Some(uiaa::UserIdentifier::UserIdOrLocalpart(user_id)) = identifier {
-		UserId::parse_with_server_name(user_id, &services.config.server_name)
+		UserId::parse_with_server_name(user_id, server_name)
 	} else if let Some(user) = user {
-		UserId::parse_with_server_name(user, &services.config.server_name)
+		UserId::parse_with_server_name(user, server_name)
 	} else {
 		return Err!(Request(Unknown(debug_warn!(
 			?body.login_info,

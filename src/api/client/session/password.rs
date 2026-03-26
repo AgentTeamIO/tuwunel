@@ -20,10 +20,11 @@ pub(super) async fn handle_login(
 	#[expect(deprecated)]
 	let Password { identifier, password, user, .. } = info;
 
+	let server_name = body.request_server_name(services);
 	let user_id = if let Some(uiaa::UserIdentifier::UserIdOrLocalpart(user_id)) = identifier {
-		UserId::parse_with_server_name(user_id, &services.config.server_name)
+		UserId::parse_with_server_name(user_id, server_name)
 	} else if let Some(user) = user {
-		UserId::parse_with_server_name(user, &services.config.server_name)
+		UserId::parse_with_server_name(user, server_name)
 	} else {
 		return Err!(Request(Unknown(debug_warn!(
 			?body.login_info,
@@ -34,7 +35,7 @@ pub(super) async fn handle_login(
 
 	let lowercased_user_id = UserId::parse_with_server_name(
 		user_id.localpart().to_lowercase(),
-		&services.config.server_name,
+		server_name,
 	)?;
 
 	let user_is_remote = !services.globals.user_is_local(&user_id)

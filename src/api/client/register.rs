@@ -63,9 +63,9 @@ pub(crate) async fn get_register_available_route(
 		body.username.to_lowercase()
 	};
 
-	// Validate user id
+	// Validate user id — use Host-header vhost for correct domain
 	let user_id =
-		match UserId::parse_with_server_name(&body_username, services.globals.server_name()) {
+		match UserId::parse_with_server_name(&body_username, body.request_server_name(&services)) {
 			| Ok(user_id) => {
 				if let Err(e) = user_id.validate_strict() {
 					// unless the username is from the broken matrix appservice IRC bridge, we
@@ -301,7 +301,7 @@ pub(crate) async fn register_route(
 				let (worked, uiaainfo) = services
 					.uiaa
 					.try_auth(
-						&UserId::parse_with_server_name("", services.globals.server_name())?,
+						&UserId::parse_with_server_name("", body.request_server_name(&services))?,
 						"".into(),
 						auth,
 						&uiaainfo,
@@ -316,7 +316,7 @@ pub(crate) async fn register_route(
 				| Some(ref json) => {
 					uiaainfo.session = Some(utils::random_string(SESSION_ID_LENGTH));
 					services.uiaa.create(
-						&UserId::parse_with_server_name("", services.globals.server_name())?,
+						&UserId::parse_with_server_name("", body.request_server_name(&services))?,
 						"".into(),
 						&uiaainfo,
 						json,
@@ -452,7 +452,7 @@ fn resolve_effective_server_name<'a>(
 ) -> Result<&'a ServerName> {
 	// Only appservice requests may specify a custom server_name
 	if body.appservice_info.is_none() {
-		return Ok(services.globals.server_name());
+		return Ok(body.request_server_name(services));
 	}
 
 	// Extract server_name from the raw JSON body if present
@@ -469,7 +469,7 @@ fn resolve_effective_server_name<'a>(
 
 	let Some(value) = server_name_field else {
 		// No server_name field — use default (backward compatible)
-		return Ok(services.globals.server_name());
+		return Ok(body.request_server_name(services));
 	};
 
 	let requested = match value {

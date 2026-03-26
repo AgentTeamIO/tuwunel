@@ -19,10 +19,11 @@ struct Claim {
 
 pub(super) async fn handle_login(
 	services: &Services,
-	_body: &Ruma<Request>,
+	body: &Ruma<Request>,
 	info: &Token,
 ) -> Result<OwnedUserId> {
-	let user_id = validate_user(services, &info.token)?;
+	let server_name = body.request_server_name(services);
+	let user_id = validate_user_with_server(services, &info.token, server_name)?;
 	if !services.users.exists(&user_id).await {
 		let config = &services.config.jwt;
 		if !config.register_user {
@@ -38,7 +39,18 @@ pub(super) async fn handle_login(
 	Ok(user_id)
 }
 
+/// Validate JWT and construct user_id using the bootstrap server_name.
+/// Used by UIAA auth flows where Host header context is unavailable.
 pub(crate) fn validate_user(services: &Services, token: &str) -> Result<OwnedUserId> {
+	validate_user_with_server(services, token, &services.server.name)
+}
+
+/// Validate JWT and construct user_id using the given server_name.
+fn validate_user_with_server(
+	services: &Services,
+	token: &str,
+	server_name: &ServerName,
+) -> Result<OwnedUserId> {
 	let config = &services.config.jwt;
 	if !config.enable {
 		return Err!(Request(Unauthorized("JWT login is not enabled.")));
@@ -46,8 +58,7 @@ pub(crate) fn validate_user(services: &Services, token: &str) -> Result<OwnedUse
 
 	let claim = validate(config, token)?;
 	let local = claim.sub.to_lowercase();
-	let server = &services.server.name;
-	let user_id = UserId::parse_with_server_name(local, server).map_err(|e| {
+	let user_id = UserId::parse_with_server_name(local, server_name).map_err(|e| {
 		err!(Request(InvalidUsername("JWT subject is not a valid user MXID: {e}")))
 	})?;
 

@@ -3,6 +3,7 @@ use std::{fmt::Debug, mem, ops::Deref};
 use axum::{body::Body, extract::FromRequest};
 use axum_extra::extract::cookie::CookieJar;
 use bytes::{BufMut, Bytes, BytesMut};
+use http::HeaderMap;
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
 	OwnedUserId, ServerName, UserId, api::IncomingRequest,
@@ -41,6 +42,11 @@ pub(crate) struct Args<T> {
 	/// Parsed JSON content.
 	/// None when body is not a valid string
 	pub(crate) json_body: Option<CanonicalJsonValue>,
+
+	/// Server name resolved from the HTTP Host header.
+	/// Set when the Host header matches a known vhost or the bootstrap server.
+	/// Used by unauthenticated endpoints for vhost-aware user ID construction.
+	pub(crate) host_server_name: Option<OwnedServerName>,
 }
 
 impl<T> Args<T> {
@@ -75,6 +81,16 @@ impl<T> Args<T> {
 			.as_ref()
 			.map(|u| u.server_name())
 			.expect("user must be authenticated for vhost context")
+	}
+
+	/// Returns the server_name for this request, suitable for unauthenticated
+	/// endpoints. Prefers the Host-header-derived vhost, falls back to the
+	/// bootstrap server_name.
+	#[inline]
+	pub(crate) fn request_server_name<'a>(&'a self, services: &'a Services) -> &'a ServerName {
+		self.host_server_name
+			.as_deref()
+			.unwrap_or(services.globals.server_name())
 	}
 }
 
@@ -123,6 +139,7 @@ where
 			json_body = Some(CanonicalJsonValue::Object(CanonicalJsonObject::new()));
 		}
 
+		let host_server_name = resolve_host_server_name(services, &request.parts.headers);
 		let auth = auth::auth(services, &mut request, json_body.as_ref(), &T::METADATA).await?;
 		Ok(Self {
 			body: make_body::<T>(services, &mut request, json_body.as_mut(), &auth)?,
@@ -132,6 +149,7 @@ where
 			sender_device: auth.sender_device,
 			appservice_info: auth.appservice_info,
 			json_body,
+			host_server_name,
 		})
 	}
 }
@@ -201,4 +219,22 @@ fn take_body(
 	let mut buf = BytesMut::new().writer();
 	serde_json::to_writer(&mut buf, &json_body).expect("value serialization can't fail");
 	buf.into_inner().freeze()
+}
+
+/// Resolve the server name from the HTTP Host header.
+/// Returns `Some(name)` if the Host matches the bootstrap server or a known
+/// vhost, `None` otherwise.
+fn resolve_host_server_name(services: &Services, headers: &HeaderMap) -> Option<OwnedServerName> {
+	let host = headers.get(http::header::HOST)?;
+	let host_str = host.to_str().ok()?;
+
+	// Strip port if present (e.g. "example.com:8448" -> "example.com")
+	let name = host_str.split(':').next().unwrap_or(host_str);
+	let sn = <&ServerName>::try_from(name).ok()?;
+
+	if services.globals.server_is_ours(sn) {
+		Some(sn.to_owned())
+	} else {
+		None
+	}
 }
