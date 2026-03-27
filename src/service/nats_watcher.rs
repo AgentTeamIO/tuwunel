@@ -67,6 +67,7 @@ impl VhostEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VhostStatus {
+	PaymentPending,
 	Provisioning,
 	Active,
 	Suspended,
@@ -233,6 +234,12 @@ async fn handle_put(
 	};
 
 	match vhost.status {
+		| VhostStatus::PaymentPending => {
+			debug_info!(
+				"NatsWatcher: ignoring vhost {} (status=payment_pending, awaiting payment)",
+				vhost.server_name
+			);
+		},
 		| VhostStatus::Provisioning => {
 			debug_info!("NatsWatcher: provisioning vhost {}", vhost.server_name);
 			if let Err(e) = provision_vhost(kv, entry, &vhost, services).await {
